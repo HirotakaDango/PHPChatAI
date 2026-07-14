@@ -1,10 +1,11 @@
-# 👋 PHPChatAI
+# PHPChatAI
 
 A lightweight, private, and modern AI chat interface built with PHP and SQLite. 
 
 ## Screenshot
 
-<img width="720" height="1560" alt="Screenshot" src="https://github.com/user-attachments/assets/4ab665e2-a278-40ef-936f-fb0ae37ed0ef" />
+<img width="720" height="1387" alt="Screenshot" src="https://github.com/user-attachments/assets/cc4927cf-b0f0-4373-85d0-108ad550bc33" />
+
 
 
 ## ✨ Features
