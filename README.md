@@ -4,7 +4,8 @@ A lightweight, private, and modern AI chat interface built with PHP and SQLite.
 
 ## Screenshot
 
-<img width="720" height="1387" alt="Screenshot" src="https://github.com/user-attachments/assets/cc4927cf-b0f0-4373-85d0-108ad550bc33" />
+<img width="720" height="1387" alt="screenshot" src="https://github.com/user-attachments/assets/f85f4895-3a77-44ef-9a66-d6822ac079d8" />
+
 
 
 
