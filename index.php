@@ -156,13 +156,13 @@ try {
       if (!in_array('email', $userCols)) $db->exec("ALTER TABLE users ADD COLUMN email TEXT");
       if (!in_array('username', $userCols)) $db->exec("ALTER TABLE users ADD COLUMN username TEXT");
     } catch (Exception $retryException) {
-      // If auto-fix fails, show specific instructions for the Replit workspace
+      // If auto-fix fails, show specific instructions for the device workspace
       die("<div style='font-family:sans-serif; padding:40px; text-align:center; background:#121212; color:#e3e3e3; height:100vh; box-sizing:border-box;'>
         <h2 style='color:#ff5252;'>Database Permission Denied</h2>
-        <p>The PHP process does not have permission to write to the database folder or file on Replit.</p>
-        <p><strong>To fix this on Replit:</strong></p>
+        <p>The PHP process does not have permission to write to the database folder or file on device.</p>
+        <p><strong>To fix this on device:</strong></p>
         <ol style='text-align:left; max-width:500px; margin:0 auto 20px; line-height:1.6;'>
-          <li>Open the <strong>Shell</strong> tab on the right side of Replit.</li>
+          <li>Open the <strong>Shell</strong> tab on the right side of device.</li>
           <li>Run the following commands one by one and press Enter:</li>
         </ol>
         <code style='background:#1e1e1e; padding:16px; display:inline-block; text-align:left; border-radius:8px; border:1px solid #333; font-size:1.1rem; line-height:1.5;'>
@@ -267,7 +267,10 @@ if (isset($_GET['api'])) {
   if (!$userId) jsonResponse(['error' => 'Unauthorized']);
 
   if ($api === 'get_chats') {
-    $stmt = $db->prepare("SELECT * FROM chats WHERE user_id = ? ORDER BY pinned DESC, created_at DESC");
+    $page = isset($_GET['page']) ? max(1, (int)$_GET['page']) : 1;
+    $limit = 25;
+    $offset = ($page - 1) * $limit;
+    $stmt = $db->prepare("SELECT * FROM chats WHERE user_id = ? ORDER BY pinned DESC, created_at DESC LIMIT $limit OFFSET $offset");
     $stmt->execute([$userId]);
     jsonResponse($stmt->fetchAll(PDO::FETCH_ASSOC));
   }
@@ -294,7 +297,9 @@ if (isset($_GET['api'])) {
 
   if ($api === 'rename_chat') {
     $req = json_decode(file_get_contents('php://input'), true);
-    $db->prepare("UPDATE chats SET title = ? WHERE id = ? AND user_id = ?")->execute([$req['title'], $req['id'], $userId]);
+    // Security: Strip HTML tags and strictly enforce character limit on the database side
+    $safeTitle = mb_substr(strip_tags($req['title'] ?? 'New Chat'), 0, 100);
+    $db->prepare("UPDATE chats SET title = ? WHERE id = ? AND user_id = ?")->execute([$safeTitle, $req['id'], $userId]);
     jsonResponse(['status' => 'success']);
   }
 
@@ -306,10 +311,13 @@ if (isset($_GET['api'])) {
 
   if ($api === 'get_messages') {
     $chatId = $_GET['chat_id'];
+    
     $stmt = $db->prepare("SELECT id FROM chats WHERE id = ? AND user_id = ?");
     $stmt->execute([$chatId, $userId]);
     if (!$stmt->fetch()) jsonResponse([]);
     
+    // Load all messages for this chat so the branching tree never breaks visually.
+    // The API token limit is safely handled by Javascript on the frontend.
     $stmt = $db->prepare("SELECT * FROM messages WHERE chat_id = ? ORDER BY created_at ASC");
     $stmt->execute([$chatId]);
     jsonResponse($stmt->fetchAll(PDO::FETCH_ASSOC));
@@ -375,7 +383,8 @@ if (isset($_GET['api'])) {
   }
 
   if ($api === 'search') {
-    $query = $_GET['q'] ?? '';
+    $req = json_decode(file_get_contents('php://input'), true);
+    $query = $req['q'] ?? ($_GET['q'] ?? '');
     $searchContext = "";
     $urls = [];
     $snippets = [];
@@ -406,7 +415,7 @@ if (isset($_GET['api'])) {
       }
     }
 
-    // Attempt 2: Fallback to Wikipedia Search API (Highly resilient on Replit IPs)
+    // Attempt 2: Fallback to Wikipedia Search API (Highly resilient on device IPs)
     if (empty($snippets)) {
       $wikiUrl = 'https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=' . urlencode($query) . '&format=json&utf8=';
       $wikiOpts = [
@@ -500,7 +509,7 @@ if (isset($_GET['api'])) {
       $payload = [
         'model' => $model,
         'messages' => $formattedMessages,
-        'max_tokens' => 2048,
+        'max_tokens' => 8192,
         'temperature' => 0.7,
         'stream' => true // Enable API Streaming
       ];
@@ -551,7 +560,7 @@ if (isset($_GET['api'])) {
     header('Content-Type: text/event-stream');
     header('Cache-Control: no-cache');
     header('Connection: keep-alive');
-    header('X-Accel-Buffering: no'); // Tells Nginx/Replit web server proxies not to buffer streaming tokens
+    header('X-Accel-Buffering: no'); // Tells Nginx/device web server proxies not to buffer streaming tokens
     @ini_set('output_buffering', 'off');
     @ini_set('zlib.output_compression', false);
     while (ob_get_level()) ob_end_flush(); // Clear all server buffers immediately
@@ -629,6 +638,24 @@ $isLoggedIn = getUserId() !== null;
         box-sizing: border-box;
         margin: 0;
         padding: 0;
+      }
+      * {
+        scrollbar-width: thin;
+        scrollbar-color: rgba(128, 128, 128, 0.3) transparent;
+      }
+      *::-webkit-scrollbar {
+        width: 6px;
+        height: 6px;
+      }
+      *::-webkit-scrollbar-track {
+        background: transparent;
+      }
+      *::-webkit-scrollbar-thumb {
+        background-color: rgba(128, 128, 128, 0.3);
+        border-radius: 10px;
+      }
+      *::-webkit-scrollbar-thumb:hover {
+        background-color: rgba(128, 128, 128, 0.5);
       }
       body {
         font-family: 'Roboto', sans-serif;
@@ -714,6 +741,7 @@ $isLoggedIn = getUserId() !== null;
         flex-direction: column;
         transition: transform 0.3s;
         z-index: 50;
+        border-right: 1px solid var(--md-sys-color-outline);
       }
       .sidebar-header {
         padding: 24px 16px 12px;
@@ -827,6 +855,8 @@ $isLoggedIn = getUserId() !== null;
         flex-direction: column;
         position: relative;
         background: var(--md-sys-color-background);
+        min-width: 0;
+        min-height: 0;
       }
       .topbar {
         padding: 12px 16px;
@@ -841,6 +871,16 @@ $isLoggedIn = getUserId() !== null;
         display: flex;
         align-items: center;
         gap: 12px;
+        flex: 1;
+        min-width: 0;
+      }
+      #topbar-title {
+        font-weight: 500;
+        font-size: 1.1rem;
+        margin-left: 4px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
       }
       .mobile-menu-btn {
         display: none;
@@ -853,11 +893,20 @@ $isLoggedIn = getUserId() !== null;
       #chat-container {
         flex: 1;
         overflow-y: auto;
+        overflow-x: hidden;
         padding: 24px;
         display: flex;
         flex-direction: column;
         align-items: center;
         scroll-behavior: smooth;
+        width: 100%;
+      }
+      #chat-container::after {
+        content: "";
+        display: block;
+        min-height: 24px;
+        width: 100%;
+        flex-shrink: 0;
       }
       .message-row {
         width: 100%;
@@ -865,6 +914,8 @@ $isLoggedIn = getUserId() !== null;
         display: flex;
         margin-bottom: 24px;
         animation: fadeIn 0.3s ease;
+        min-width: 0;
+        flex-shrink: 0;
       }
       @keyframes fadeIn {
         from { opacity: 0; transform: translateY(5px); }
@@ -881,6 +932,9 @@ $isLoggedIn = getUserId() !== null;
         display: flex;
         flex-direction: column;
         gap: 6px;
+        min-width: 0;
+        width: 100%; 
+        overflow-x: hidden;
       }
       .user .message-bubble {
         background: var(--md-sys-color-primary-container);
@@ -900,8 +954,10 @@ $isLoggedIn = getUserId() !== null;
         font-size: 1rem;
         line-height: 1.6;
         word-wrap: break-word;
+        overflow-wrap: break-word;
         width: 100%;
-        overflow-x: auto;
+        overflow-x: hidden;
+        min-width: 0;
       }
       .markdown-body pre {
         background: #1e1e1e;
@@ -912,15 +968,52 @@ $isLoggedIn = getUserId() !== null;
         margin: 12px 0;
         font-size: 0.9rem;
         position: relative;
+        max-width: 100%;
       }
       .markdown-body pre code {
         font-family: monospace;
       }
+      .markdown-body pre {
+        position: relative;
+      }
+      .code-copy-btn {
+        position: absolute;
+        top: 6px;
+        right: 6px;
+        background: rgba(255, 255, 255, 0.08);
+        border: 1px solid rgba(255, 255, 255, 0.15);
+        color: #a3a3a3;
+        border-radius: 6px;
+        padding: 4px 8px;
+        font-size: 0.75rem;
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        cursor: pointer;
+        opacity: 0;
+        transition: opacity 0.2s, background 0.2s, color 0.2s;
+        z-index: 10;
+      }
+      .markdown-body pre:hover .code-copy-btn {
+        opacity: 1;
+      }
+      .code-copy-btn:hover {
+        background: rgba(255, 255, 255, 0.18);
+        color: #ffffff;
+      }
+      .code-copy-btn span {
+        font-size: 14px !important;
+      }
       .markdown-body p {
-        margin-bottom: 12px;
+        margin-bottom: 16px;
+        line-height: 1.6;
       }
       .markdown-body p:last-child {
         margin-bottom: 0;
+      }
+      .markdown-body strong {
+        font-weight: 600;
+        color: var(--md-sys-color-on-surface);
       }
       .markdown-body code:not(pre code) {
         background: rgba(128,128,128,0.2);
@@ -981,7 +1074,9 @@ $isLoggedIn = getUserId() !== null;
         padding: 16px 24px 24px;
         display: flex;
         justify-content: center;
-        background: linear-gradient(180deg, transparent, var(--md-sys-color-background) 20%);
+        background: var(--md-sys-color-background);
+        position: relative;
+        z-index: 10;
       }
       .input-box {
         width: 100%;
@@ -995,7 +1090,7 @@ $isLoggedIn = getUserId() !== null;
         box-shadow: 0 4px 15px rgba(0,0,0,0.1);
       }
       .input-box textarea {
-        flex: 1;
+        width: 100%;
         background: transparent;
         border: none;
         color: var(--md-sys-color-on-background);
@@ -1003,10 +1098,12 @@ $isLoggedIn = getUserId() !== null;
         font-size: 1rem;
         line-height: 1.5;
         resize: none;
-        min-height: 52px;
+        height: 52px;
         max-height: 250px;
         padding: 14px 8px 14px 0;
         outline: none;
+        overflow-y: auto;
+        box-sizing: border-box;
       }
       .input-actions {
         display: flex;
@@ -1129,8 +1226,8 @@ $isLoggedIn = getUserId() !== null;
       }
       #scroll-to-bottom-btn {
         position: absolute;
-        bottom: 175px;
-        right: 24px;
+        bottom: 160px;
+        right: max(24px, calc(50% - 400px + 12px));
         background: var(--md-sys-color-surface-variant);
         color: var(--md-sys-color-on-surface);
         border: 1px solid var(--md-sys-color-outline);
@@ -1162,6 +1259,19 @@ $isLoggedIn = getUserId() !== null;
           transform: translateX(-100%);
           width: 280px;
           box-shadow: 2px 0 10px rgba(0,0,0,0.1);
+        }
+        #chat-container {
+          padding: 16px 12px;
+        }
+        .input-area {
+          padding: 12px 12px 16px;
+        }
+        .message-content-wrapper {
+          max-width: 100%;
+        }
+        #scroll-to-bottom-btn {
+          bottom: 160px;
+          right: 16px;
         }
         #sidebar.open {
           transform: translateX(0);
@@ -1261,24 +1371,18 @@ $isLoggedIn = getUserId() !== null;
         margin-bottom: 12px;
         font-weight: 500;
       }
-      .typing-indicator span {
-        display: inline-block;
-        width: 6px;
-        height: 6px;
-        background-color: var(--md-sys-color-on-surface-variant);
+      .spinner {
+        width: 24px;
+        height: 24px;
+        border: 3px solid var(--md-sys-color-surface-variant);
+        border-top: 3px solid var(--md-sys-color-primary);
         border-radius: 50%;
-        animation: bounce 1.4s infinite ease-in-out both;
-        margin-right: 4px;
+        animation: spin 1s linear infinite;
+        margin: 8px auto;
       }
-      .typing-indicator span:nth-child(1) {
-        animation-delay: -0.32s;
-      }
-      .typing-indicator span:nth-child(2) {
-        animation-delay: -0.16s;
-      }
-      @keyframes bounce {
-        0%, 80%, 100% { transform: scale(0); }
-        40% { transform: scale(1); }
+      @keyframes spin {
+        0% { transform: rotate(0deg); }
+        100% { transform: rotate(360deg); }
       }
       .error-text {
         color: #ff5252 !important;
@@ -1579,6 +1683,10 @@ $isLoggedIn = getUserId() !== null;
       let isWaiting = false;
       let abortController = null;
       let searchQuery = '';
+      let chatPage = 1;
+      let hasMoreChats = false;
+      let messagePage = 1;
+      let hasMoreMessages = false;
       
       let isSearchActive = localStorage.getItem('isSearchActive') === 'true';
       let isThinkActive = localStorage.getItem('isThinkActive') === 'true';
@@ -1872,20 +1980,36 @@ $isLoggedIn = getUserId() !== null;
         }
       });
 
-      async function loadChats() {
-        const res = await fetch('?api=get_chats');
-        chats = await res.json();
+      async function loadChats(append = false) {
+        if (!append) chatPage = 1;
+        const res = await fetch(`?api=get_chats&page=${chatPage}`);
+        const fetchedChats = await res.json();
+        
+        hasMoreChats = fetchedChats.length === 25;
+        
+        if (append) {
+          chats = chats.concat(fetchedChats);
+        } else {
+          chats = fetchedChats;
+        }
+        
         renderChatList();
         
-        const urlParams = new URLSearchParams(window.location.search);
-        const chatIdFromUrl = urlParams.get('chat');
-        
-        // Stay on "New Chat" unless there is a specific chat requested in the URL params
-        if (chatIdFromUrl && chats.some(c => c.id == chatIdFromUrl)) {
-          await selectChat(chatIdFromUrl, false);
-        } else {
-          await startNewChat(false);
+        if (!append) {
+          const urlParams = new URLSearchParams(window.location.search);
+          const chatIdFromUrl = urlParams.get('chat');
+          
+          if (chatIdFromUrl) {
+            await selectChat(chatIdFromUrl, false);
+          } else {
+            await startNewChat(false);
+          }
         }
+      }
+
+      function loadMoreChats() {
+        chatPage++;
+        loadChats(true);
       }
 
       function filterChats() {
@@ -1898,11 +2022,19 @@ $isLoggedIn = getUserId() !== null;
         list.innerHTML = '';
         const filtered = chats.filter(c => c.title.toLowerCase().includes(searchQuery));
         filtered.forEach(c => {
+          // XSS Prevention: Sanitize title to prevent HTML/JS injection in the sidebar
+          const safeTitle = c.title
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;")
+            .replace(/'/g, "&#039;");
+            
           const div = document.createElement('div');
           div.className = `chat-item ${c.id === currentChatId ? 'active' : ''}`;
           div.innerHTML = `
             <span class="material-symbols-outlined" style="font-size:16px; margin-right:8px;">${c.pinned == 1 ? 'keep' : 'chat'}</span>
-            <span class="title" onclick="selectChat('${c.id}')">${c.title}</span>
+            <span class="title" onclick="selectChat('${c.id}')">${safeTitle}</span>
             <div class="chat-actions">
               <button onclick="pinChat('${c.id}', ${c.pinned == 1 ? 0 : 1})" title="${c.pinned == 1 ? 'Unpin' : 'Pin'}">
                 <span class="material-symbols-outlined" style="font-size:16px">${c.pinned == 1 ? 'keep_off' : 'keep'}</span>
@@ -1917,6 +2049,18 @@ $isLoggedIn = getUserId() !== null;
           `;
           list.appendChild(div);
         });
+        
+        // Append Load More Button if necessary
+        if (hasMoreChats && searchQuery === '') {
+          const loadMoreBtn = document.createElement('button');
+          loadMoreBtn.className = 'chat-item';
+          loadMoreBtn.style.justifyContent = 'center';
+          loadMoreBtn.style.color = 'var(--md-sys-color-primary)';
+          loadMoreBtn.style.fontWeight = '500';
+          loadMoreBtn.innerHTML = '<span class="material-symbols-outlined" style="font-size:18px; margin-right:6px;">expand_more</span> Load More';
+          loadMoreBtn.onclick = loadMoreChats;
+          list.appendChild(loadMoreBtn);
+        }
       }
 
       async function startNewChat(push = true) {
@@ -1926,6 +2070,8 @@ $isLoggedIn = getUserId() !== null;
         document.getElementById('topbar-title').textContent = "PHPChatAI";
         messages = [];
         activeLeafId = null;
+        messagePage = 1;
+        hasMoreMessages = false;
         renderChatList();
         renderMessages();
         if (window.innerWidth <= 768) document.getElementById('sidebar').classList.remove('open');
@@ -1937,11 +2083,17 @@ $isLoggedIn = getUserId() !== null;
         
         // Dynamic title change matching active chat
         const activeChat = chats.find(c => c.id === id);
-        const titleText = activeChat ? activeChat.title : "PHPChatAI";
+        let titleText = activeChat ? activeChat.title : "PHPChatAI";
+        
+        // Strictly limit UI header title to 60 characters for layout safety
+        if (titleText.length > 60) {
+          titleText = titleText.substring(0, 60) + '...';
+        }
+        
         document.getElementById('topbar-title').textContent = titleText;
         
         if (activeChat) {
-          document.title = `${activeChat.title} — PHPChatAI`;
+          document.title = `${titleText} — PHPChatAI`;
         } else {
           document.title = "PHPChatAI";
         }
@@ -1952,6 +2104,28 @@ $isLoggedIn = getUserId() !== null;
         renderChatList();
         renderMessages();
         if (window.innerWidth <= 768) document.getElementById('sidebar').classList.remove('open');
+      }
+
+      async function loadMoreMessages() {
+        if (!currentChatId || !hasMoreMessages) return;
+        messagePage++;
+        const res = await fetch(`?api=get_messages&chat_id=${currentChatId}&page=${messagePage}`);
+        const olderMessages = await res.json();
+        
+        hasMoreMessages = olderMessages.length === 25;
+        if (olderMessages.length > 0) {
+          const existingIds = new Set(messages.map(m => m.id));
+          const uniqueOlder = olderMessages.filter(m => !existingIds.has(m.id));
+          messages = [...uniqueOlder, ...messages];
+          
+          const container = document.getElementById('chat-container');
+          const previousScrollHeight = container.scrollHeight;
+          
+          renderMessages(false); // Render without autoscrolling down
+          
+          // Maintain exact scroll position smoothly
+          container.scrollTop = container.scrollHeight - previousScrollHeight;
+        }
       }
 
       async function deleteChat(id) {
@@ -1975,6 +2149,7 @@ $isLoggedIn = getUserId() !== null;
       async function renameChat(id) {
         let newTitle = prompt("Enter new chat name:");
         if (newTitle) {
+          newTitle = newTitle.trim().substring(0, 60); // Prevent excessively long manual names
           await fetch('?api=rename_chat', {
             method: 'POST',
             body: JSON.stringify({id: id, title: newTitle})
@@ -2036,14 +2211,20 @@ $isLoggedIn = getUserId() !== null;
       }
 
       const inputEl = document.getElementById('msg-input');
-      inputEl.addEventListener('input', function() {
-        this.style.height = '24px';
-        this.style.height = (this.scrollHeight) + 'px';
-      });
+      const adjustInputHeight = () => {
+        inputEl.style.height = '52px'; // Shrink back to baseline first
+        inputEl.style.height = inputEl.scrollHeight + 'px'; // Expand perfectly to fit text
+      };
+      inputEl.addEventListener('input', adjustInputHeight);
       inputEl.addEventListener('keydown', function(e) {
-        if (e.key === 'Enter' && !e.shiftKey) {
+        const isMobile = window.innerWidth <= 768;
+        
+        // On desktop, Enter sends. On mobile, Enter creates a new line (unless Shift is held).
+        if (e.key === 'Enter' && !e.shiftKey && !isMobile) {
           e.preventDefault();
           if (!isWaiting) handleSend();
+        } else {
+          setTimeout(adjustInputHeight, 0);
         }
       });
 
@@ -2073,11 +2254,42 @@ $isLoggedIn = getUserId() !== null;
         renderMessages();
       }
 
+      function getDynamicCharLimit() {
+        let provider = localStorage.getItem('selected_provider') || 'gemini';
+        let selectedModel = provider === 'gemini' 
+          ? (localStorage.getItem('selected_model_gemini') || 'gemini-3.1-flash-lite')
+          : (localStorage.getItem('selected_model_hf') || 'Qwen/Qwen2.5-72B-Instruct');
+        
+        // Define max input tokens dynamically based on the model's capacity
+        let maxTokens = 8192; // default safe baseline
+        const modelLower = selectedModel.toLowerCase();
+        
+        if (modelLower.includes('gemini')) maxTokens = 128000; // Gemini supports massive contexts
+        else if (modelLower.includes('deepseek-r1') || modelLower.includes('llama-3.3')) maxTokens = 32000;
+        else if (modelLower.includes('qwen2.5-72b')) maxTokens = 32000;
+        
+        return maxTokens * 4; // 1 Token ≈ 4 Characters
+      }
+
       async function handleSend() {
         let text = inputEl.value.trim();
         if (!text && attachedFiles.length === 0) return;
         
-        const displayTitleText = inputEl.value.trim() || attachedFiles[0]?.name || "New Chat";
+        // Clean up title: replace newlines with spaces and limit to 60 characters to prevent UI breaks
+        let rawTitle = inputEl.value.trim() || attachedFiles[0]?.name || "New Chat";
+        const displayTitleText = rawTitle.replace(/[\r\n]+/g, ' ').substring(0, 60);
+
+        // Enforce Dynamic Character Limit based on Model Token Limit
+        const MAX_CHARS = getDynamicCharLimit();
+        let totalLength = text.length;
+        if (attachedFiles.length > 0) {
+          totalLength += attachedFiles.reduce((sum, f) => sum + f.content.length, 0);
+        }
+        if (totalLength > MAX_CHARS) {
+          const maxTokens = MAX_CHARS / 4;
+          alert(`Message is too long! (${totalLength} chars). Please limit to ${MAX_CHARS} characters (~${maxTokens} tokens) for the selected model.`);
+          return;
+        }
         
         // Append file contents to the text behind the scenes
         if (attachedFiles.length > 0) {
@@ -2086,7 +2298,7 @@ $isLoggedIn = getUserId() !== null;
         }
 
         inputEl.value = '';
-        inputEl.style.height = '24px';
+        inputEl.style.height = '52px'; // Snap back to default height after sending
         attachedFiles = [];
         renderAttachments();
         
@@ -2096,7 +2308,7 @@ $isLoggedIn = getUserId() !== null;
           currentChatId = data.id;
           updateURL(currentChatId);
           
-          const title = displayTitleText.length > 25 ? displayTitleText.substring(0, 25) + '...' : displayTitleText;
+          const title = displayTitleText;
           document.title = `${title} — PHPChatAI`;
           document.getElementById('topbar-title').textContent = title;
           await fetch('?api=rename_chat', {
@@ -2135,7 +2347,16 @@ $isLoggedIn = getUserId() !== null;
         activeLeafId = aiMsg.id;
         renderMessages();
         
+        // Extract the exact timeline path for the current branch
         let contextPath = getThreadPath(parentMsgId);
+        
+        // Keep all messages in the database/UI, but ONLY send the last 15 messages to the AI.
+        // This prevents exceeding API token limits and stops the AI from getting cut off mid-sentence.
+        const MAX_CONTEXT_MESSAGES = 15;
+        if (contextPath.length > MAX_CONTEXT_MESSAGES) {
+          contextPath = contextPath.slice(-MAX_CONTEXT_MESSAGES);
+        }
+
         // Deep clone contextPath for the API payload to avoid mutating UI message bubbles
         let apiMessages = contextPath.map(m => ({ role: m.role, content: m.content }));
         
@@ -2146,6 +2367,7 @@ $isLoggedIn = getUserId() !== null;
           
         abortController = new AbortController();
         
+        let searchInterval = null;
         try {
           if (isSearchActive) {
             // Exclude file contents from the search query so we only search the user's text
@@ -2153,13 +2375,17 @@ $isLoggedIn = getUserId() !== null;
             const cleanQuery = cleanSearchQuery(lastUserMsgClean);
             
             let searchStart = Date.now();
-            let searchInterval = setInterval(() => {
+            searchInterval = setInterval(() => {
               let elapsed = ((Date.now() - searchStart) / 1000).toFixed(1);
               aiMsg.content = `<search>Searching for "${cleanQuery}"... (${elapsed}s)</search>`;
               updateMessageBubble(aiMsg.id, aiMsg.content);
             }, 100);
             
-            const searchRes = await fetch('?api=search&q=' + encodeURIComponent(cleanQuery));
+            const searchRes = await fetch('?api=search', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ q: cleanQuery })
+            });
             const searchData = await searchRes.json();
             
             clearInterval(searchInterval);
@@ -2258,6 +2484,7 @@ $isLoggedIn = getUserId() !== null;
             updateMessageBubble(aiMsg.id, aiMsg.content);
           }
         } catch (e) {
+          if (searchInterval) clearInterval(searchInterval);
           if (e.name !== 'AbortError') {
             aiMsg.content = '⚠️ Connection Error.';
             aiMsg.isError = true;
@@ -2274,9 +2501,12 @@ $isLoggedIn = getUserId() !== null;
         let el = document.getElementById('msg-bubble-' + id);
         if (el) {
           el.innerHTML = processContent(content, id);
+          attachCodeCopyButtons(el);
           const container = document.getElementById('chat-container');
           // Autoscroll down naturally while it's generating
-          if (container.scrollHeight - container.scrollTop - container.clientHeight < 150) {
+          // Increased threshold to 300 and use Math.ceil to handle fractional pixels reliably
+          const offset = container.scrollHeight - container.scrollTop - container.clientHeight;
+          if (Math.ceil(offset) < 300) {
             container.scrollTop = container.scrollHeight;
           }
         }
@@ -2309,6 +2539,35 @@ $isLoggedIn = getUserId() !== null;
         navigator.clipboard.writeText(text);
       }
 
+      function attachCodeCopyButtons(container) {
+        if (!container) return;
+        container.querySelectorAll('pre').forEach(pre => {
+          if (pre.querySelector('.code-copy-btn')) return; // Avoid duplicate buttons
+          
+          const btn = document.createElement('button');
+          btn.className = 'code-copy-btn';
+          btn.type = 'button';
+          btn.innerHTML = '<span class="material-symbols-outlined">content_copy</span> Copy';
+          
+          btn.addEventListener('click', () => {
+            const codeEl = pre.querySelector('code');
+            const text = codeEl ? codeEl.innerText : pre.innerText;
+            navigator.clipboard.writeText(text).then(() => {
+              btn.innerHTML = '<span class="material-symbols-outlined">check</span> Copied';
+              btn.style.borderColor = 'rgba(77, 107, 254, 0.4)';
+              btn.style.color = '#4d6bfe';
+              setTimeout(() => {
+                btn.innerHTML = '<span class="material-symbols-outlined">content_copy</span> Copy';
+                btn.style.borderColor = '';
+                btn.style.color = '';
+              }, 2000);
+            });
+          });
+          
+          pre.appendChild(btn);
+        });
+      }
+
       function getDomainName(url) {
         try {
           const parsed = new URL(url);
@@ -2335,7 +2594,15 @@ $isLoggedIn = getUserId() !== null;
           .replace(/please/gi, '')
           .replace(/[!?.()]/g, '')
           .trim();
-        return clean || query;
+        
+        let finalQuery = clean || query;
+        
+        // Search engines reject massive queries. Truncate to a safe limit.
+        if (finalQuery.length > 200) {
+          finalQuery = finalQuery.substring(0, 200) + '...';
+        }
+        
+        return finalQuery;
       }
 
       function processContent(text, msgId = null) {
@@ -2416,6 +2683,7 @@ $isLoggedIn = getUserId() !== null;
       function renderMessages() {
         const container = document.getElementById('chat-container');
         container.innerHTML = '';
+        
         if (messages.length === 0) {
           container.innerHTML = `
             <div style="margin:auto; text-align:center; opacity:0.8; animation: fadeIn 0.5s ease; display: flex; flex-direction: column; align-items: center; justify-content: center;">
@@ -2428,9 +2696,10 @@ $isLoggedIn = getUserId() !== null;
           return;
         }
         let path = getThreadPath(activeLeafId);
-        path.forEach(msg => {
+        path.forEach((msg) => {
           let siblings = messages.filter(m => m.parent_id === msg.parent_id);
-          let index = siblings.findIndex(m => m.id === msg.id);
+          let bIndex = siblings.findIndex(m => m.id === msg.id);
+          
           let div = document.createElement('div');
           div.className = `message-row ${msg.role}`;
           let wrapper = document.createElement('div');
@@ -2442,7 +2711,7 @@ $isLoggedIn = getUserId() !== null;
           if (msg.isError) bubble.classList.add('error-text');
           
           if (msg.content === '...' && isWaiting && msg.id === activeLeafId) {
-            bubble.innerHTML = '<div class="typing-indicator"><span></span><span></span><span></span></div>';
+            bubble.innerHTML = '<div class="spinner"></div>';
           } else {
             if (msg.role === 'user') {
               let safeText = msg.content
@@ -2464,16 +2733,18 @@ $isLoggedIn = getUserId() !== null;
           if (!isWaiting || msg.id !== activeLeafId) {
             let controls = document.createElement('div');
             controls.className = 'message-controls';
+            
             if (siblings.length > 1) {
               let nav = document.createElement('div');
               nav.className = 'branch-nav';
               nav.innerHTML = `
-                <button onclick="switchBranch('${msg.id}', -1)" ${index === 0 ? 'disabled' : ''}><span class="material-symbols-outlined" style="font-size:16px;">chevron_left</span></button>
-                <span>${index + 1}/${siblings.length}</span>
-                <button onclick="switchBranch('${msg.id}', 1)" ${index === siblings.length - 1 ? 'disabled' : ''}><span class="material-symbols-outlined" style="font-size:16px;">chevron_right</span></button>
+                <button onclick="switchBranch('${msg.id}', -1)" ${bIndex === 0 ? 'disabled' : ''}><span class="material-symbols-outlined" style="font-size:16px;">chevron_left</span></button>
+                <span style="user-select:none; font-size:0.85rem;">${bIndex + 1}/${siblings.length}</span>
+                <button onclick="switchBranch('${msg.id}', 1)" ${bIndex === siblings.length - 1 ? 'disabled' : ''}><span class="material-symbols-outlined" style="font-size:16px;">chevron_right</span></button>
               `;
               controls.appendChild(nav);
             }
+            
             if (msg.role === 'user') {
               let copyUserBtn = document.createElement('button');
               copyUserBtn.innerHTML = '<span class="material-symbols-outlined" style="font-size:16px;">content_copy</span>';
@@ -2487,12 +2758,25 @@ $isLoggedIn = getUserId() !== null;
               let editBtn = document.createElement('button');
               editBtn.innerHTML = '<span class="material-symbols-outlined" style="font-size:16px;">edit</span>';
               editBtn.onclick = () => {
-                bubble.innerHTML = `<textarea style="width:100%; min-height:150px; background:var(--md-sys-color-primary-container); color:var(--md-sys-color-on-primary-container); padding:16px; border-radius:12px; border:1px solid var(--md-sys-color-primary); outline:none; font-family:inherit; font-size:1rem; font-weight:normal; resize:vertical;">${msg.content}</textarea>
+                bubble.innerHTML = `<textarea id="edit-input-${msg.id}" style="width:100%; min-height:50px; max-height:250px; background:var(--md-sys-color-primary-container); color:var(--md-sys-color-on-primary-container); padding:16px; border-radius:12px; border:1px solid var(--md-sys-color-primary); outline:none; font-family:inherit; font-size:1rem; font-weight:normal; resize:none; overflow-y:auto; box-sizing:border-box;">${msg.content}</textarea>
                 <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:8px;">
                   <button onclick="renderMessages()" style="padding:8px 16px; border-radius:16px; background:var(--md-sys-color-surface-variant);">Cancel</button>
                   <button onclick="handleEditSave('${msg.id}', this.parentElement.previousElementSibling.value)" style="padding:8px 16px; border-radius:16px; background:var(--md-sys-color-primary); color:var(--md-sys-color-on-primary);">Save</button>
                 </div>`;
                 controls.style.display = 'none';
+
+                const editTx = document.getElementById(`edit-input-${msg.id}`);
+                const adjustEditHeight = () => {
+                  editTx.style.height = 'auto';
+                  editTx.style.height = editTx.scrollHeight + 'px';
+                };
+                
+                // Initial size calculation
+                adjustEditHeight();
+                
+                // Dynamic auto-grow sizing on typing and linebreaks
+                editTx.addEventListener('input', adjustEditHeight);
+                editTx.addEventListener('keydown', () => setTimeout(adjustEditHeight, 0));
               };
               controls.appendChild(editBtn);
             } else {
@@ -2516,19 +2800,31 @@ $isLoggedIn = getUserId() !== null;
           div.appendChild(wrapper);
           container.appendChild(div);
         });
+        attachCodeCopyButtons(container);
         document.getElementById('msg-input').disabled = isWaiting;
-        setTimeout(() => { container.scrollTop = container.scrollHeight; }, 50);
+        // Use requestAnimationFrame for a more reliable post-render scroll
+        requestAnimationFrame(() => {
+          setTimeout(() => { container.scrollTop = container.scrollHeight; }, 10);
+        });
       }
 
       function renderAttachments() {
         const container = document.getElementById('attachments-container');
         container.innerHTML = '';
         attachedFiles.forEach((file, index) => {
+          // XSS Prevention for file names
+          const safeName = file.name
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;")
+            .replace(/'/g, "&#039;");
+            
           const pill = document.createElement('div');
           pill.className = 'file-pill';
           pill.innerHTML = `
             <span class="material-symbols-outlined" style="font-size:16px;">description</span>
-            <span style="max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${file.name}</span>
+            <span style="max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${safeName}</span>
             <span class="material-symbols-outlined remove-file" style="font-size:16px;" onclick="removeAttachment(${index})">close</span>
           `;
           container.appendChild(pill);
@@ -2562,6 +2858,8 @@ $isLoggedIn = getUserId() !== null;
           top: container.scrollHeight,
           behavior: 'smooth'
         });
+        // Immediately hide button for better UX
+        document.getElementById('scroll-to-bottom-btn').classList.remove('show');
       }
 
       let deferredPrompt = null;
@@ -2636,8 +2934,9 @@ $isLoggedIn = getUserId() !== null;
         if (chatContainer) {
           chatContainer.addEventListener('scroll', () => {
             const btn = document.getElementById('scroll-to-bottom-btn');
-            const offset = chatContainer.scrollHeight - chatContainer.clientHeight - chatContainer.scrollTop;
-            if (offset > 300) {
+            // Use Math.ceil to prevent fractional pixel bugs, lower threshold to 100 so it hides properly at the very bottom
+            const offset = Math.ceil(chatContainer.scrollHeight - chatContainer.clientHeight - chatContainer.scrollTop);
+            if (offset > 100) {
               btn.classList.add('show');
             } else {
               btn.classList.remove('show');
