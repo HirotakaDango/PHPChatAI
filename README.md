@@ -16,13 +16,13 @@ A lightweight, private, and modern AI chat interface built with PHP and SQLite.
 - **Resilient Web Search:** Fast DuckDuckGo search with Wikipedia fallback to bypass rate limits on shared hosting.
 - **File Attachments:** Upload `.txt`, `.md`, or `.csv` files shown as visual pills (keeping the text area clean).
 - **Strict Privacy:** Account isolation secures chat data so users can only access and delete their own threads.
-- **Multi-Model Options:** Integrated HuggingFace models including powerful reasoning, fast, and uncensored models.
+- **Multi-Model Options:** Integrated HuggingFace and Gemini models including powerful reasoning, fast, and uncensored models.
 
 ## 🚀 Setup & Installation
 
 1. **Deploy:** Upload the code to any PHP server (PHP 8.0+ required with `pdo_sqlite` enabled).
 2. **Launch:** Access the script via your browser.
-3. **Configure:** Log in, open **Settings**, and paste your HuggingFace API Token to start chatting.
+3. **Configure:** Log in, open **Settings**, and paste your HuggingFace or Gemini API Token to start chatting.
 
 ### 🔒 Permissions
 
@@ -37,4 +37,4 @@ touch phpchat.sqlite && chmod 644 phpchat.sqlite
 
 - PHP 8.0 or higher
 - SQLite3 and `pdo_sqlite` extensions enabled
-- A free HuggingFace API Token
+- A free HuggingFace/Gemini API Token
