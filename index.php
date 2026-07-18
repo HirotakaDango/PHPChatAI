@@ -12,90 +12,109 @@ if (isset($_GET['icon'])) {
   exit;
 }
 
-// PWA Service Worker endpoint
-if (isset($_GET['sw'])) {
-  header('Content-Type: application/javascript; charset=utf-8');
-  header('Service-Worker-Allowed: /');
-  ?>
-  const CACHE_NAME = 'PHPChatAI-cache-v3';
-  const ASSETS = [
-    './',
-    './index.php',
-    'https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&display=swap',
-    'https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@24,400,0,0'
-  ];
+// PWA Manifest and Service Worker Config (InfinityFree Compatible)
+if (isset($_GET['pwa'])) {
+  if ($_GET['pwa'] === 'manifest') {
+    header('Content-Type: application/manifest+json; charset=utf-8');
+    header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+    echo json_encode([
+      'short_name' => 'PHPChatAI',
+      'name' => 'PHPChatAI System',
+      'icons' => [
+        [
+          'src' => '?icon=1',
+          'type' => 'image/svg+xml',
+          'sizes' => '512x512',
+          'purpose' => 'any maskable'
+        ],
+        [
+          'src' => '?icon=1',
+          'type' => 'image/svg+xml',
+          'sizes' => '192x192',
+          'purpose' => 'any'
+        ]
+      ],
+      'start_url' => './',
+      'scope' => './',
+      'background_color' => '#131415',
+      'theme_color' => '#131415',
+      'display' => 'standalone',
+      'orientation' => 'portrait'
+    ], JSON_UNESCAPED_SLASHES);
+    exit;
+  }
 
-  self.addEventListener('install', (e) => {
-    e.waitUntil(
-      caches.open(CACHE_NAME).then((cache) => {
-        return cache.addAll(ASSETS).catch(() => {});
-      }).then(() => self.skipWaiting())
-    );
-  });
+  if ($_GET['pwa'] === 'sw') {
+    header('Content-Type: application/javascript; charset=utf-8');
+    header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+    header('Service-Worker-Allowed: /');
+    ?>
+    const CACHE_NAME = 'PHPChatAI-cache-v5';
+    const ASSETS = [
+      './',
+      './index.php',
+      '?pwa=manifest',
+      '?icon=1',
+      'https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&display=swap',
+      'https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@24,400,0,0'
+    ];
 
-  self.addEventListener('activate', (e) => {
-    e.waitUntil(
-      caches.keys().then((keys) => {
-        return Promise.all(
-          keys.map((key) => {
-            if (key !== CACHE_NAME) {
-              return caches.delete(key);
+    self.addEventListener('install', (e) => {
+      e.waitUntil(
+        caches.open(CACHE_NAME).then((cache) => {
+          return cache.addAll(ASSETS).catch(() => {});
+        }).then(() => self.skipWaiting())
+      );
+    });
+
+    self.addEventListener('activate', (e) => {
+      e.waitUntil(
+        caches.keys().then((keys) => {
+          return Promise.all(
+            keys.map((key) => {
+              if (key !== CACHE_NAME) {
+                return caches.delete(key);
+              }
+            })
+          );
+        }).then(() => self.clients.claim())
+      );
+    });
+
+    self.addEventListener('fetch', (e) => {
+      const url = new URL(e.request.url);
+      
+      // Explicitly bypass cache for ALL database/API requests to force persistent memory
+      if (url.search.includes('api=')) {
+        e.respondWith(fetch(e.request));
+        return;
+      }
+      
+      e.respondWith(
+        fetch(e.request)
+          .then((res) => {
+            if (res && res.status === 200) {
+              const clone = res.clone();
+              caches.open(CACHE_NAME).then((cache) => {
+                cache.put(e.request, clone);
+              });
             }
+            return res;
           })
-        );
-      }).then(() => self.clients.claim())
-    );
-  });
-
-  self.addEventListener('fetch', (e) => {
-    const url = new URL(e.request.url);
-    if (url.search.includes('api=')) {
-      return;
-    }
-    e.respondWith(
-      fetch(e.request)
-        .then((res) => {
-          if (res && res.status === 200) {
-            const clone = res.clone();
-            caches.open(CACHE_NAME).then((cache) => {
-              cache.put(e.request, clone);
+          .catch(() => {
+            return caches.match(e.request).then((cachedRes) => {
+              if (cachedRes) return cachedRes;
+              if (e.request.mode === 'navigate') {
+                return caches.match('./') || caches.match('./index.php');
+              }
             });
-          }
-          return res;
-        })
-        .catch(() => {
-          return caches.match(e.request).then((cachedRes) => {
-            if (cachedRes) return cachedRes;
-            if (e.request.mode === 'navigate') {
-              return caches.match('./') || caches.match('./index.php');
-            }
-          });
-        })
-    );
-  });
-  <?php
-  exit;
+          })
+      );
+    });
+    <?php
+    exit;
+  }
 }
-
-// PWA App Manifest config (Base64 Encoded for reliable PWA install)
-$manifestData = [
-  'short_name' => 'PHPChatAI',
-  'name' => 'PHPChatAI System',
-  'icons' => [
-    [
-      'src' => "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%234d6bfe'%3E%3Cpath d='m10.75 11.5l7.075-7.075q.3-.3.7-.3t.7.3t.3.7t-.3.7l-7.05 7.075zm2.475 2.475l6.35-6.375q.3-.3.713-.3t.712.3t.3.713t-.3.712l-6.35 6.35zm-7.95 4.75Q3 16.45 3 13.25t2.275-5.475l3-3L9.75 6.25q.175.175.3.363T10.3 7L14 3.275q.3-.3.713-.3t.712.3t.3.712t-.3.713L11.1 9.025l-2.125 2.1l.475.475q1.15 1.15 1.1 2.75t-1.225 2.775l-1.425-1.4q.575-.575.638-1.362T8.025 13L6.85 11.85q-.3-.3-.3-.712t.3-.713l1.425-1.4q.3-.3.3-.713t-.3-.712l-1.6 1.6q-1.7 1.7-1.7 4.063t1.7 4.062t4.075 1.7t4.075-1.7l5.975-6q.3-.3.713-.3t.712.3t.3.713t-.3.712l-6 5.975Q13.95 21 10.75 21t-5.475-2.275M17 23.025V21q1.65 0 2.825-1.175T21 17h2.025q0 2.5-1.763 4.263T17 23.025M.975 7q0-2.5 1.763-4.262T7 .974V3Q5.35 3 4.175 4.175T3 7z'/%3E%3C/svg%3E",
-      'type' => 'image/svg+xml',
-      'sizes' => '192x192 512x512',
-      'purpose' => 'any maskable'
-    ]
-  ],
-  'start_url' => './index.php',
-  'background_color' => '#131415',
-  'theme_color' => '#131415',
-  'display' => 'standalone',
-  'orientation' => 'portrait'
-];
-$manifestBase64 = base64_encode(json_encode($manifestData));
 
 $dbFile = __DIR__ . '/phpchat.sqlite';
 try {
@@ -163,7 +182,9 @@ function getUserId() {
   return $_SESSION['user_id'] ?? null;
 }
 function jsonResponse($data) {
-  header('Content-Type: application/json');
+  header('Content-Type: application/json; charset=utf-8');
+  header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+  header('Pragma: no-cache');
   echo json_encode($data);
   exit;
 }
@@ -182,9 +203,10 @@ if (getUserId()) {
   }
 }
 
-$stmt = $db->query("SELECT value FROM settings WHERE key = 'hf_token'");
-$tokenRow = $stmt->fetch(PDO::FETCH_ASSOC);
-$hfToken = $tokenRow ? $tokenRow['value'] : '';
+$stmt = $db->query("SELECT key, value FROM settings WHERE key IN ('hf_token', 'gemini_token')");
+$tokens = $stmt->fetchAll(PDO::FETCH_KEY_PAIR);
+$hfToken = $tokens['hf_token'] ?? '';
+$geminiToken = $tokens['gemini_token'] ?? '';
 
 if (isset($_GET['api'])) {
   $api = $_GET['api'];
@@ -340,14 +362,15 @@ if (isset($_GET['api'])) {
 
   if ($api === 'get_setting') {
     if (!$isAdmin) jsonResponse(['error' => 'Unauthorized']);
-    jsonResponse(['value' => $hfToken]);
+    jsonResponse(['hf_value' => $hfToken, 'gemini_value' => $geminiToken]);
   }
 
   if ($api === 'save_setting') {
     if (!$isAdmin) jsonResponse(['error' => 'Unauthorized']);
     $req = json_decode(file_get_contents('php://input'), true);
-    $stmt = $db->prepare("INSERT INTO settings (key, value) VALUES ('hf_token', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value");
-    $stmt->execute([$req['value']]);
+    $stmt = $db->prepare("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value");
+    $stmt->execute(['hf_token', $req['hf_value'] ?? '']);
+    $stmt->execute(['gemini_token', $req['gemini_value'] ?? '']);
     jsonResponse(['status' => 'success']);
   }
 
@@ -421,50 +444,81 @@ if (isset($_GET['api'])) {
   }
 
   if ($api === 'chat') {
-    if (empty($hfToken)) jsonResponse(['error' => 'API token not configured by administrator.']);
-    
     $req = json_decode(file_get_contents('php://input'), true);
     $messages = $req['messages'] ?? [];
-    $model = $req['model'] ?? 'Qwen/Qwen2.5-72B-Instruct';
+    $model = $req['model'] ?? 'gemini-3.1-flash-lite';
+    $provider = $req['provider'] ?? 'gemini';
+    
+    $isGemini = ($provider === 'gemini');
+    
+    if ($isGemini && empty($geminiToken)) jsonResponse(['error' => 'Google AI Studio (Gemini) API token not configured by administrator.']);
+    if (!$isGemini && empty($hfToken)) jsonResponse(['error' => 'HuggingFace API token not configured by administrator.']);
     
     $formattedMessages = [];
-    foreach ($messages as $m) {
-      $formattedMessages[] = ['role' => $m['role'], 'content' => $m['content']];
+    if ($isGemini) {
+      foreach ($messages as $m) {
+        $role = $m['role'] === 'assistant' ? 'model' : 'user';
+        $formattedMessages[] = ['role' => $role, 'parts' => [['text' => $m['content']]]];
+      }
+    } else {
+      foreach ($messages as $m) {
+        $formattedMessages[] = ['role' => $m['role'], 'content' => $m['content']];
+      }
     }
     
     if (!empty($formattedMessages)) {
       $lastIdx = count($formattedMessages) - 1;
-      $lastContent = $formattedMessages[$lastIdx]['content'];
-
-      // Search is now handled dynamically via frontend ?api=search
       
       // Think Feature (Force reasoning prompt)
       if (!empty($req['think'])) {
-        $formattedMessages[$lastIdx]['content'] .= "\n\n(Please think step-by-step and wrap your detailed reasoning inside <think>...</think> tags before providing the final answer.)";
+        $appendStr = "\n\n(Please think step-by-step and wrap your detailed reasoning inside <think>...</think> tags before providing the final answer.)";
+        if ($isGemini) {
+          $formattedMessages[$lastIdx]['parts'][0]['text'] .= $appendStr;
+        } else {
+          $formattedMessages[$lastIdx]['content'] .= $appendStr;
+        }
       }
     }
     
-    $payload = [
-      'model' => $model,
-      'messages' => $formattedMessages,
-      'max_tokens' => 2048,
-      'temperature' => 0.7,
-      'stream' => true // Enable API Streaming
-    ];
-    
-    $options = [
-      'http' => [
-        'header'  => "Content-type: application/json\r\nAuthorization: Bearer " . trim($hfToken) . "\r\n",
-        'method'  => 'POST',
-        'content' => json_encode($payload),
-        'ignore_errors' => true,
-        'timeout' => 45
-      ],
-      'ssl' => ['verify_peer' => false, 'verify_peer_name' => false]
-    ];
+    if ($isGemini) {
+      $payload = [
+        'contents' => $formattedMessages,
+        'generationConfig' => ['temperature' => 0.7, 'maxOutputTokens' => 8192]
+      ];
+      $options = [
+        'http' => [
+          'header'  => "Content-type: application/json\r\n",
+          'method'  => 'POST',
+          'content' => json_encode($payload),
+          'ignore_errors' => true,
+          'timeout' => 45
+        ],
+        'ssl' => ['verify_peer' => false, 'verify_peer_name' => false]
+      ];
+      $url = "https://generativelanguage.googleapis.com/v1beta/models/" . urlencode($model) . ":streamGenerateContent?alt=sse&key=" . trim($geminiToken);
+    } else {
+      $payload = [
+        'model' => $model,
+        'messages' => $formattedMessages,
+        'max_tokens' => 2048,
+        'temperature' => 0.7,
+        'stream' => true // Enable API Streaming
+      ];
+      $options = [
+        'http' => [
+          'header'  => "Content-type: application/json\r\nAuthorization: Bearer " . trim($hfToken) . "\r\n",
+          'method'  => 'POST',
+          'content' => json_encode($payload),
+          'ignore_errors' => true,
+          'timeout' => 45
+        ],
+        'ssl' => ['verify_peer' => false, 'verify_peer_name' => false]
+      ];
+      $url = "https://router.huggingface.co/v1/chat/completions";
+    }
     
     $context = stream_context_create($options);
-    $fp = @fopen("https://router.huggingface.co/v1/chat/completions", 'r', false, $context);
+    $fp = @fopen($url, 'r', false, $context);
     
     if (!$fp) {
       $error = error_get_last();
@@ -524,7 +578,7 @@ $isLoggedIn = getUserId() !== null;
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
     <title>PHPChatAI</title>
-    <link rel="manifest" href="data:application/manifest+json;base64,<?= $manifestBase64 ?>">
+    <link rel="manifest" href="?pwa=manifest" crossorigin="use-credentials">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="apple-mobile-web-app-title" content="PHPChatAI">
@@ -1227,8 +1281,15 @@ $isLoggedIn = getUserId() !== null;
         40% { transform: scale(1); }
       }
       .error-text {
-        color: #b3261e;
+        color: #ff5252 !important;
         font-weight: 500;
+        background: rgba(255, 82, 82, 0.1) !important;
+        padding: 16px !important;
+        border-radius: 12px !important;
+        border: 1px solid rgba(255, 82, 82, 0.3) !important;
+      }
+      .error-text * {
+        color: inherit !important;
       }
       .markdown-body hr {
         border: 0;
@@ -1377,19 +1438,52 @@ $isLoggedIn = getUserId() !== null;
         <!-- AI Model Tab -->
         <div id="tab-ai" class="settings-tab-content active">
           <div class="settings-section" style="border: none; padding-top: 0; margin-top: 0;">
-            <h3>AI Model</h3>
-            <input type="text" id="model-search-input" placeholder="Search HuggingFace models..." oninput="searchHFModels()" style="margin-bottom: 8px;">
-            <select id="settings-model">
-              <optgroup label="Search Results" id="hf-search-results" style="display:none;"></optgroup>
-              <optgroup label="Available Models">
-                <option value="deepseek-ai/DeepSeek-R1">DeepSeek R1 (Ultimate Reasoning)</option>
-                <option value="Qwen/Qwen3-4B-Thinking-2507">Qwen 3 4B Thinking (Fast Reasoning)</option>
-                <option value="meta-llama/Llama-3.3-70B-Instruct">Llama 3.3 70B Instruct</option>
-                <option value="Qwen/Qwen2.5-72B-Instruct">Qwen 2.5 72B Instruct</option>
-                <option value="zai-org/GLM-4.5">GLM-4.5 (Advanced General)</option>
-                <option value="Qwen/Qwen2.5-Coder-32B-Instruct">Qwen 2.5 Coder 32B</option>
-              </optgroup>
-            </select>
+            <h3>API Provider</h3>
+            <div style="display: flex; gap: 8px; margin-bottom: 16px;">
+              <button id="provider-btn-huggingface" class="theme-select-btn active" onclick="setProviderMode('huggingface')">
+                <span class="material-symbols-outlined">api</span> HuggingFace
+              </button>
+              <button id="provider-btn-gemini" class="theme-select-btn" onclick="setProviderMode('gemini')">
+                <span class="material-symbols-outlined">science</span> Google AI Studio
+              </button>
+            </div>
+            
+            <h3 id="model-label-hf">HuggingFace Model</h3>
+            <div id="hf-model-container">
+              <input type="text" id="model-search-input" placeholder="Search HuggingFace models..." oninput="searchHFModels()" style="margin-bottom: 8px;">
+              <select id="settings-model-hf">
+                <optgroup label="Search Results" id="hf-search-results" style="display:none;"></optgroup>
+                <optgroup label="HuggingFace Models">
+                  <option value="google/gemma-4-31b-it">Gemma 4 31B Instruct</option>
+                  <option value="google/gemma-4-12b-it">Gemma 4 12B Instruct</option>
+                  <option value="google/gemma-3-27b-it">Gemma 3 27B Instruct</option>
+                  <option value="google/gemma-3-4b-it">Gemma 3 4B Instruct</option>
+                  <option value="deepseek-ai/DeepSeek-R1">DeepSeek R1 (Ultimate Reasoning)</option>
+                  <option value="meta-llama/Llama-3.3-70B-Instruct">Llama 3.3 70B Instruct</option>
+                  <option value="Qwen/Qwen3-4B-Thinking-2507">Qwen 3 4B Thinking</option>
+                  <option value="Qwen/Qwen2.5-72B-Instruct">Qwen 2.5 72B Instruct</option>
+                </optgroup>
+              </select>
+            </div>
+            
+            <div id="gemini-model-container" style="display: none;">
+              <select id="settings-model-gemini">
+                <optgroup label="Google Gemini Models">
+                  <option value="gemini-3.5-flash">Gemini 3.5 Flash (Latest)</option>
+                  <option value="gemini-3.1-pro-preview">Gemini 3.1 Pro (Preview)</option>
+                  <option value="gemini-3.1-flash-lite">Gemini 3.1 Flash-Lite</option>
+                  <option value="gemini-2.5-pro">Gemini 2.5 Pro</option>
+                  <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
+                </optgroup>
+                <optgroup label="Google Gemma Models (AI Studio)">
+                  <option value="gemma-4-31b-it">Gemma 4 31B Instruct</option>
+                  <option value="gemma-4-12b-it">Gemma 4 12B Instruct</option>
+                  <option value="gemma-3-27b-it">Gemma 3 27B Instruct</option>
+                  <option value="gemma-3-4b-it">Gemma 3 4B Instruct</option>
+                  <option value="gemma-2-27b-it">Gemma 2 27B Instruct</option>
+                </optgroup>
+              </select>
+            </div>
           </div>
         </div>
 
@@ -1425,15 +1519,26 @@ $isLoggedIn = getUserId() !== null;
         <?php if ($isAdmin): ?>
           <div id="tab-admin" class="settings-tab-content">
             <div class="settings-section" style="border: none; padding-top: 0; margin-top: 0;">
-              <h3>Admin HuggingFace Token</h3>
-              <div style="position: relative; display: flex; align-items: center;">
+              <h3>Admin API Tokens</h3>
+              <div style="position: relative; display: flex; align-items: center; margin-bottom: 12px;">
                 <input type="password" id="hf-token-input" placeholder="HuggingFace API Token" style="margin-bottom: 0; padding-right: 80px;">
                 <div style="position: absolute; right: 16px; display: flex; gap: 12px; align-items: center; z-index: 10;">
-                  <button type="button" onclick="toggleTokenVisibility()" style="display: flex; align-items: center; justify-content: center; color: var(--md-sys-color-on-surface-variant); cursor: pointer;" title="Toggle Visibility">
-                    <span class="material-symbols-outlined" id="token-visibility-icon" style="font-size: 20px;">visibility_off</span>
+                  <button type="button" onclick="toggleTokenVisibility('hf-token-input', 'hf-token-visibility-icon')" style="display: flex; align-items: center; justify-content: center; color: var(--md-sys-color-on-surface-variant); cursor: pointer;" title="Toggle Visibility">
+                    <span class="material-symbols-outlined" id="hf-token-visibility-icon" style="font-size: 20px;">visibility_off</span>
                   </button>
-                  <button type="button" onclick="copyAdminToken()" style="display: flex; align-items: center; justify-content: center; color: var(--md-sys-color-on-surface-variant); cursor: pointer;" title="Copy Token">
-                    <span class="material-symbols-outlined" id="token-copy-icon" style="font-size: 20px;">content_copy</span>
+                  <button type="button" onclick="copyAdminToken('hf-token-input', 'hf-token-copy-icon')" style="display: flex; align-items: center; justify-content: center; color: var(--md-sys-color-on-surface-variant); cursor: pointer;" title="Copy Token">
+                    <span class="material-symbols-outlined" id="hf-token-copy-icon" style="font-size: 20px;">content_copy</span>
+                  </button>
+                </div>
+              </div>
+              <div style="position: relative; display: flex; align-items: center;">
+                <input type="password" id="gemini-token-input" placeholder="Gemini API Token (AI Studio)" style="margin-bottom: 0; padding-right: 80px;">
+                <div style="position: absolute; right: 16px; display: flex; gap: 12px; align-items: center; z-index: 10;">
+                  <button type="button" onclick="toggleTokenVisibility('gemini-token-input', 'gemini-token-visibility-icon')" style="display: flex; align-items: center; justify-content: center; color: var(--md-sys-color-on-surface-variant); cursor: pointer;" title="Toggle Visibility">
+                    <span class="material-symbols-outlined" id="gemini-token-visibility-icon" style="font-size: 20px;">visibility_off</span>
+                  </button>
+                  <button type="button" onclick="copyAdminToken('gemini-token-input', 'gemini-token-copy-icon')" style="display: flex; align-items: center; justify-content: center; color: var(--md-sys-color-on-surface-variant); cursor: pointer;" title="Copy Token">
+                    <span class="material-symbols-outlined" id="gemini-token-copy-icon" style="font-size: 20px;">content_copy</span>
                   </button>
                 </div>
               </div>
@@ -1501,6 +1606,22 @@ $isLoggedIn = getUserId() !== null;
       function setThemeMode(mode) {
         localStorage.setItem('theme_mode', mode);
         applyTheme();
+      }
+
+      function setProviderMode(provider) {
+        localStorage.setItem('selected_provider', provider);
+        document.getElementById('provider-btn-huggingface').classList.toggle('active', provider === 'huggingface');
+        document.getElementById('provider-btn-gemini').classList.toggle('active', provider === 'gemini');
+        
+        if (provider === 'gemini') {
+          document.getElementById('hf-model-container').style.display = 'none';
+          document.getElementById('model-label-hf').textContent = 'Google AI Studio Model';
+          document.getElementById('gemini-model-container').style.display = 'block';
+        } else {
+          document.getElementById('hf-model-container').style.display = 'block';
+          document.getElementById('model-label-hf').textContent = 'HuggingFace Model';
+          document.getElementById('gemini-model-container').style.display = 'none';
+        }
       }
 
       // Handle OS theme changes dynamically when "System" is active
@@ -1606,7 +1727,7 @@ $isLoggedIn = getUserId() !== null;
                 resultsGroup.appendChild(opt);
               });
               resultsGroup.style.display = 'block';
-              document.getElementById('settings-model').value = data[0].modelId; // Auto-select top result
+              document.getElementById('settings-model-hf').value = data[0].modelId; // Auto-select top result
             } else {
               resultsGroup.style.display = 'none';
             }
@@ -1639,18 +1760,29 @@ $isLoggedIn = getUserId() !== null;
           document.getElementById('tab-ai').classList.add('active');
         }
 
-        const savedModel = localStorage.getItem('selected_model') || 'Qwen/Qwen2.5-72B-Instruct';
-        const selectEl = document.getElementById('settings-model');
+        const savedProvider = localStorage.getItem('selected_provider') || 'gemini';
+        setProviderMode(savedProvider);
+
+        const savedModelHF = localStorage.getItem('selected_model_hf') || 'Qwen/Qwen2.5-72B-Instruct';
+        const savedModelGemini = localStorage.getItem('selected_model_gemini') || 'gemini-3.1-flash-lite';
         
-        // If the saved model isn't in the default list, add it dynamically
-        if (!Array.from(selectEl.options).some(opt => opt.value === savedModel)) {
+        const selectHF = document.getElementById('settings-model-hf');
+        if (!Array.from(selectHF.options).some(opt => opt.value === savedModelHF)) {
           const customOpt = document.createElement('option');
-          customOpt.value = savedModel;
-          customOpt.textContent = savedModel + ' (Custom)';
-          selectEl.appendChild(customOpt);
+          customOpt.value = savedModelHF;
+          customOpt.textContent = savedModelHF + ' (Custom)';
+          selectHF.appendChild(customOpt);
         }
-        
-        selectEl.value = savedModel;
+        selectHF.value = savedModelHF;
+
+        const selectGemini = document.getElementById('settings-model-gemini');
+        if (!Array.from(selectGemini.options).some(opt => opt.value === savedModelGemini)) {
+          const customOpt = document.createElement('option');
+          customOpt.value = savedModelGemini;
+          customOpt.textContent = savedModelGemini + ' (Custom)';
+          selectGemini.appendChild(customOpt);
+        }
+        selectGemini.value = savedModelGemini;
         document.getElementById('settings-modal').classList.add('show'); // Open immediately
         applyTheme(); // Refresh theme button active highlights
         
@@ -1659,7 +1791,10 @@ $isLoggedIn = getUserId() !== null;
           fetch('?api=get_setting')
             .then(res => res.json())
             .then(data => {
-              if (!data.error) document.getElementById('hf-token-input').value = data.value || '';
+              if (!data.error) {
+                document.getElementById('hf-token-input').value = data.hf_value || '';
+                document.getElementById('gemini-token-input').value = data.gemini_value || '';
+              }
             }).catch(err => console.error(err));
         }
       }
@@ -1679,13 +1814,15 @@ $isLoggedIn = getUserId() !== null;
       window.addEventListener('touchstart', handleModalOutClick, {passive: true});
 
       async function saveSettings() {
-        localStorage.setItem('selected_model', document.getElementById('settings-model').value);
+        localStorage.setItem('selected_model_hf', document.getElementById('settings-model-hf').value);
+        localStorage.setItem('selected_model_gemini', document.getElementById('settings-model-gemini').value);
         const adminCheck = <?= $isAdmin ? 'true' : 'false' ?>;
         if (adminCheck) {
-          const token = document.getElementById('hf-token-input').value.trim();
+          const hfToken = document.getElementById('hf-token-input').value.trim();
+          const geminiToken = document.getElementById('gemini-token-input').value.trim();
           await fetch('?api=save_setting', {
             method: 'POST',
-            body: JSON.stringify({value: token})
+            body: JSON.stringify({hf_value: hfToken, gemini_value: geminiToken})
           });
         }
         closeSettings();
@@ -2001,7 +2138,12 @@ $isLoggedIn = getUserId() !== null;
         let contextPath = getThreadPath(parentMsgId);
         // Deep clone contextPath for the API payload to avoid mutating UI message bubbles
         let apiMessages = contextPath.map(m => ({ role: m.role, content: m.content }));
-        let selectedModel = localStorage.getItem('selected_model') || 'Qwen/Qwen2.5-72B-Instruct';
+        
+        let provider = localStorage.getItem('selected_provider') || 'gemini';
+        let selectedModel = provider === 'gemini' 
+          ? (localStorage.getItem('selected_model_gemini') || 'gemini-3.1-flash-lite')
+          : (localStorage.getItem('selected_model_hf') || 'Qwen/Qwen2.5-72B-Instruct');
+          
         abortController = new AbortController();
         
         try {
@@ -2040,6 +2182,7 @@ $isLoggedIn = getUserId() !== null;
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ 
               model: selectedModel, 
+              provider: provider,
               messages: apiMessages,
               search: isSearchActive,
               think: isThinkActive
@@ -2091,9 +2234,18 @@ $isLoggedIn = getUserId() !== null;
                     let errMsg = typeof parsed.error === 'object' ? (parsed.error.message || JSON.stringify(parsed.error)) : parsed.error;
                     aiMsg.content = '⚠️ ' + errMsg;
                     aiMsg.isError = true;
+                    updateMessageBubble(aiMsg.id, aiMsg.content);
                   } else if (parsed.choices && parsed.choices[0].delta && parsed.choices[0].delta.content) {
+                    // HuggingFace & OpenAI Format
                     aiMsg.content += parsed.choices[0].delta.content;
                     updateMessageBubble(aiMsg.id, aiMsg.content);
+                  } else if (parsed.candidates && parsed.candidates[0].content && parsed.candidates[0].content.parts) {
+                    // Google Gemini SSE Format
+                    const parts = parsed.candidates[0].content.parts;
+                    if (parts.length > 0 && parts[0].text) {
+                      aiMsg.content += parts[0].text;
+                      updateMessageBubble(aiMsg.id, aiMsg.content);
+                    }
                   }
                 } catch(e) {}
               }
@@ -2443,9 +2595,9 @@ $isLoggedIn = getUserId() !== null;
         }
       });
 
-      function toggleTokenVisibility() {
-        const input = document.getElementById('hf-token-input');
-        const icon = document.getElementById('token-visibility-icon');
+      function toggleTokenVisibility(inputId, iconId) {
+        const input = document.getElementById(inputId);
+        const icon = document.getElementById(iconId);
         if (input && icon) {
           if (input.type === 'password') {
             input.type = 'text';
@@ -2457,9 +2609,9 @@ $isLoggedIn = getUserId() !== null;
         }
       }
 
-      function copyAdminToken() {
-        const input = document.getElementById('hf-token-input');
-        const icon = document.getElementById('token-copy-icon');
+      function copyAdminToken(inputId, iconId) {
+        const input = document.getElementById(inputId);
+        const icon = document.getElementById(iconId);
         if (input && input.value && icon) {
           navigator.clipboard.writeText(input.value);
           icon.textContent = 'check';
@@ -2470,9 +2622,9 @@ $isLoggedIn = getUserId() !== null;
       }
 
       document.addEventListener("DOMContentLoaded", () => {
-        // Register PWA Service Worker
+        // Register PWA Service Worker (InfinityFree Routing)
         if ('serviceWorker' in navigator) {
-          navigator.serviceWorker.register('?sw=1', { scope: './' })
+          navigator.serviceWorker.register('?pwa=sw', { scope: './' })
             .catch(err => console.log('ServiceWorker registration failed:', err));
         }
 
@@ -2494,14 +2646,15 @@ $isLoggedIn = getUserId() !== null;
         }
 
         if (<?= $isLoggedIn ? 'true' : 'false' ?>) {
-          const tokenMissing = <?= empty($hfToken) ? 'true' : 'false' ?>;
+          const hfTokenMissing = <?= empty($hfToken) ? 'true' : 'false' ?>;
+          const geminiTokenMissing = <?= empty($geminiToken) ? 'true' : 'false' ?>;
           const userIsAdmin = <?= $isAdmin ? 'true' : 'false' ?>;
           
-          if (tokenMissing) {
+          if (hfTokenMissing && geminiTokenMissing) {
             if (userIsAdmin) {
               openSettings();
             } else {
-              alert("The administrator hasn't configured the AI API token yet. The chat may not respond correctly.");
+              alert("The administrator hasn't configured any AI API tokens yet. The chat may not respond correctly.");
             }
           }
           loadChats();
