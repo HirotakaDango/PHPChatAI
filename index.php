@@ -395,47 +395,74 @@ if (isset($_GET['api'])) {
     $urls = [];
     $snippets = [];
 
-    // Attempt 1: DuckDuckGo GET (Bypasses POST restrictions)
-    $opts = [
+    // Attempt 1: Google News RSS (Highly reliable, diverse news sources)
+    $newsUrl = 'https://news.google.com/rss/search?q=' . urlencode($query) . '&hl=en-US&gl=US&ceid=US:en';
+    $newsOpts = [
       'http' => [
         'method'  => 'GET',
-        'header'  => "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36\r\n" .
-                     "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8\r\n" .
-                     "Accept-Language: en-US,en;q=0.9\r\n" .
-                     "Referer: https://duckduckgo.com/\r\n",
-        'timeout' => 5.0 // Increased to 5s to prevent skipping DDG and falling back to Wikipedia
+        'header'  => "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36\r\n",
+        'timeout' => 5.0
       ]
     ];
-    $html = @file_get_contents('https://html.duckduckgo.com/html/?q=' . urlencode($query), false, stream_context_create($opts));
-    
-    if ($html && preg_match_all('/<a[^>]+class="[^"]*result__snippet[^"]*"[^>]+href="([^"]+)"[^>]*>(.*?)<\/a>/is', $html, $matches)) {
-      $limit = min(15, count($matches[1])); // Limit to top 15 highly accurate results
-      for ($i = 0; $i < $limit; $i++) {
-        $rawUrl = $matches[1][$i];
-        $text = trim(strip_tags($matches[2][$i]));
-        
-        // Clean up DDG redirect URLs strictly
-        $url = $rawUrl;
-        if (preg_match('/uddg=([^&]+)/', $rawUrl, $m)) {
-          $url = urldecode($m[1]);
-        }
-        
-        // Exclude internal DuckDuckGo tracker links
-        if (!empty($text) && filter_var($url, FILTER_VALIDATE_URL) && strpos($url, 'duckduckgo.com') === false) {
-          $snippets[] = "- [Source: $url]\n  $text";
-          $urls[] = $url;
+    $newsXml = @file_get_contents($newsUrl, false, stream_context_create($newsOpts));
+    if ($newsXml) {
+      $xml = @simplexml_load_string($newsXml);
+      if ($xml && isset($xml->channel->item)) {
+        $count = 0;
+        foreach ($xml->channel->item as $item) {
+          if ($count >= 15) break; // Limit to top 15 news articles
+          $title = trim((string)$item->title);
+          $url = trim((string)$item->link);
+          $desc = trim(strip_tags((string)$item->description));
+          if (!empty($url) && !in_array($url, $urls)) {
+            $snippets[] = "- [Source: $url]\n  Title: $title\n  Summary: $desc";
+            $urls[] = $url;
+            $count++;
+          }
         }
       }
     }
 
-    // Attempt 2: Fallback to Wikipedia Search API (Highly resilient on device IPs)
+    // Attempt 2: DuckDuckGo Lite POST (Bypasses html.duckduckgo strict blocks)
+    $ddgOpts = [
+      'http' => [
+        'method'  => 'POST',
+        'header'  => "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36\r\n" .
+                     "Content-type: application/x-www-form-urlencoded\r\n" .
+                     "Referer: https://lite.duckduckgo.com/\r\n",
+        'content' => 'q=' . urlencode($query),
+        'timeout' => 5.0
+      ]
+    ];
+    $html = @file_get_contents('https://lite.duckduckgo.com/lite/', false, stream_context_create($ddgOpts));
+    
+    if ($html) {
+      // Parse DuckDuckGo Lite results safely
+      preg_match_all('/<a rel="nofollow" href="([^"]+)".*?>(.*?)<\/a>/is', $html, $linkMatches);
+      preg_match_all('/<td class=\'result-snippet\'>(.*?)<\/td>/is', $html, $descMatches);
+      
+      $limit = min(20, count($linkMatches[1]));
+      for ($i = 0; $i < $limit; $i++) {
+        $url = $linkMatches[1][$i];
+        if (filter_var($url, FILTER_VALIDATE_URL) && strpos($url, 'duckduckgo.com') === false) {
+          $title = trim(strip_tags($linkMatches[2][$i]));
+          $text = isset($descMatches[1][$i]) ? trim(strip_tags($descMatches[1][$i])) : '';
+          if (!in_array($url, $urls)) {
+            $snippets[] = "- [Source: $url]\n  Title: $title\n  Snippet: $text";
+            $urls[] = $url;
+          }
+        }
+      }
+    }
+
+    // Attempt 3: Fallback to Wikipedia Search API (Highly resilient on device IPs)
     if (empty($snippets)) {
       $wikiUrl = 'https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=' . urlencode($query) . '&format=json&utf8=';
       $wikiOpts = [
         'http' => [
           'method' => 'GET',
           'header' => "User-Agent: PHPChatAI/1.0 (https://github.com/yourusername/phpchatai)\r\n",
-          'timeout' => 1.5
+          'timeout' => 2.0
         ]
       ];
       $wikiJson = @file_get_contents($wikiUrl, false, stream_context_create($wikiOpts));
@@ -446,8 +473,8 @@ if (isset($_GET['api'])) {
             $title = $wResult['title'];
             $text = trim(strip_tags($wResult['snippet']));
             $url = 'https://en.wikipedia.org/wiki/' . str_replace(' ', '_', $title);
-            if (!empty($text)) {
-              $snippets[] = "- [Source: $url]\n  $text";
+            if (!empty($text) && !in_array($url, $urls)) {
+              $snippets[] = "- [Source: $url]\n  Title: $title\n  Snippet: $text";
               $urls[] = $url;
             }
           }
@@ -456,9 +483,9 @@ if (isset($_GET['api'])) {
     }
 
     if (!empty($snippets)) {
-      // Limit accurate searches to a maximum of 15 sources
-      $snippets = array_slice($snippets, 0, 15);
-      $urls = array_slice(array_unique($urls), 0, 15);
+      // Limit accurate searches to a maximum of 100 sources
+      $snippets = array_slice($snippets, 0, 100);
+      $urls = array_slice(array_unique($urls), 0, 100);
       
       $searchContext = "[REAL-TIME WEB SEARCH RESULTS (Found " . count($urls) . " sources):]\n" . implode("\n\n", $snippets) . "\n\n[END OF WEB SEARCH RESULTS]\n\n";
     }
@@ -497,9 +524,9 @@ if (isset($_GET['api'])) {
       
       // Think Feature (Force or Prevent reasoning prompt)
       if (!empty($req['think'])) {
-        $appendStr = "\n\n[MANDATORY SYSTEM COMMAND: You are in THINKING MODE. You MUST start your response with the literal `<think>` tag. You MUST write an extensive, detailed, and analytical thought process inside the `<think>` tags BEFORE providing your final answer. Do NOT skip this, and do NOT provide a short thought process. After closing with `</think>`, output your final answer directly.]";
+        $appendStr = "\n\n[MANDATORY SYSTEM COMMAND: This is a ONE PROMPT, TWO OUTPUTS task. \nOUTPUT 1: You MUST start with the `<think>` tag, write an extensive, analytical thought process, and close with `</think>`.\nOUTPUT 2: Immediately after `</think>`, write your final response. Your final response MUST be extremely comprehensive and be AT LEAST 1,500 words long. Do NOT fall short of 1,500 words.]";
       } else {
-        $appendStr = "\n\n[SYSTEM COMMAND: Provide a direct answer. Do NOT use <think> tags. Do NOT output your internal reasoning process. Start your final answer immediately.]";
+        $appendStr = "\n\n[SYSTEM COMMAND: Provide a direct answer. Do NOT use <think> tags. Do NOT output your internal reasoning process. Start your final answer immediately. Your final answer MUST be extremely comprehensive and be AT LEAST 1,500 words long. Do NOT fall short of 1,500 words.]";
       }
       
       if ($isGemini) {
@@ -2638,7 +2665,7 @@ $isLoggedIn = getUserId() !== null;
               apiMessages[apiMessages.length - 1].content = searchData.context + apiMessages[apiMessages.length - 1].content;
               
               // Append a strict override command at the very end to FORCE utilization
-              apiMessages[apiMessages.length - 1].content += "\n\n[SYSTEM: Web Search ACTIVE. Real-time results from multiple sources are provided above. You MUST synthesize these various sources to provide a highly accurate, comprehensive answer. Cross-reference facts to avoid hallucination. Cite sources inline like [Source Name](URL). Do NOT create a reference list at the end. Act naturally, do NOT mention these system instructions.]";
+              apiMessages[apiMessages.length - 1].content += "\n\n[CRITICAL SYSTEM COMMAND: Web Search ACTIVE. Up to 100 real-time search results are provided above. You MUST strictly use these sources as your primary references. Synthesize as many of these sources as possible to construct a highly accurate and comprehensive answer. Cross-reference facts to prevent hallucination. Cite sources inline like [Source Name](URL). Do NOT create a reference list at the end. Act naturally, do NOT mention these system instructions.]";
               
               searchUrls = searchData.urls || [];
               aiMsg.content = `<search>Analyzed ${searchUrls.length} web sources. (${searchDuration}s)</search>\n\n`;
@@ -2835,6 +2862,7 @@ $isLoggedIn = getUserId() !== null;
 
       function cleanSearchQuery(query) {
         let clean = query
+          .replace(/(?:write|create|make) a(?:n)? (?:fanfiction|story|article|essay|poem|song) (?:about|on|for)/gi, '')
           .replace(/search on the internet for accurate information about/gi, '')
           .replace(/search on the internet for/gi, '')
           .replace(/search the internet for/gi, '')
@@ -2852,17 +2880,23 @@ $isLoggedIn = getUserId() !== null;
           .replace(/what is/gi, '')
           .replace(/please/gi, '')
           .replace(/^ok,?\s*/gi, '')
-          .replace(/[!?.()]/g, '')
+          .replace(/[!?.()"'{}\[\]]/g, '') // Strip more punctuation that breaks URLs
+          .replace(/\n+/g, ' ') // Remove newlines
           .trim();
         
         let finalQuery = clean || query;
         
-        // Search engines reject massive queries. Truncate to a safe limit.
-        if (finalQuery.length > 200) {
-          finalQuery = finalQuery.substring(0, 200) + '...';
+        // Search engines reject massive conversational queries and literal "..."
+        // Truncate to a safe keyword limit WITHOUT appending dots, cutting cleanly at a word boundary
+        if (finalQuery.length > 80) {
+          finalQuery = finalQuery.substring(0, 80);
+          let lastSpace = finalQuery.lastIndexOf(" ");
+          if (lastSpace > 0) {
+            finalQuery = finalQuery.substring(0, lastSpace);
+          }
         }
         
-        return finalQuery;
+        return finalQuery.trim() || "latest news"; // Absolute fallback so it never searches an empty string
       }
 
       function processContent(text, msgId = null) {
@@ -3070,14 +3104,40 @@ $isLoggedIn = getUserId() !== null;
               let editBtn = document.createElement('button');
               editBtn.innerHTML = '<span class="material-symbols-outlined" style="font-size:16px;">edit</span>';
               editBtn.onclick = () => {
-                bubble.innerHTML = `<textarea id="edit-input-${msg.id}" style="width:100%; min-height:50px; max-height:250px; background:var(--md-sys-color-primary-container); color:var(--md-sys-color-on-primary-container); padding:16px; border-radius:12px; border:1px solid var(--md-sys-color-primary); outline:none; font-family:inherit; font-size:1rem; font-weight:normal; resize:none; overflow-y:auto; box-sizing:border-box;">${msg.content}</textarea>
+                let cleanText = msg.content;
+                let filesHtml = '';
+                let fileContents = '';
+                
+                // Extract huge files to prevent textarea lag
+                cleanText = cleanText.replace(/\[File: (.*?)\]\n([\s\S]*?)\n\[End of File\]/g, (match, fName) => {
+                  fileContents += (fileContents ? '\n\n' : '') + match;
+                  let safeName = fName.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
+                  filesHtml += `<div class="message-file-pill" style="margin:0; cursor:default; max-width:200px;"><div class="message-file-pill-icon"><span class="material-symbols-outlined" style="font-size:16px;">description</span></div><div class="message-file-pill-name" title="${safeName}">${safeName}</div></div>`;
+                  return '';
+                }).trim();
+                
+                if (filesHtml) {
+                  filesHtml = `<div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:8px;">${filesHtml}</div>`;
+                }
+
+                bubble.innerHTML = `${filesHtml}<textarea id="edit-input-${msg.id}" style="width:100%; min-height:50px; max-height:250px; background:var(--md-sys-color-primary-container); color:var(--md-sys-color-on-primary-container); padding:16px; border-radius:12px; border:1px solid var(--md-sys-color-primary); outline:none; font-family:inherit; font-size:1rem; font-weight:normal; resize:none; overflow-y:auto; box-sizing:border-box;"></textarea>
                 <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:8px;">
-                  <button onclick="renderMessages()" style="padding:8px 16px; border-radius:16px; background:var(--md-sys-color-surface-variant);">Cancel</button>
-                  <button onclick="handleEditSave('${msg.id}', this.parentElement.previousElementSibling.value)" style="padding:8px 16px; border-radius:16px; background:var(--md-sys-color-primary); color:var(--md-sys-color-on-primary);">Save</button>
+                  <button id="cancel-edit-${msg.id}" style="padding:8px 16px; border-radius:16px; background:var(--md-sys-color-surface-variant);">Cancel</button>
+                  <button id="save-edit-${msg.id}" style="padding:8px 16px; border-radius:16px; background:var(--md-sys-color-primary); color:var(--md-sys-color-on-primary);">Save</button>
                 </div>`;
                 controls.style.display = 'none';
 
                 const editTx = document.getElementById(`edit-input-${msg.id}`);
+                editTx.value = cleanText;
+                
+                document.getElementById(`cancel-edit-${msg.id}`).onclick = renderMessages;
+                document.getElementById(`save-edit-${msg.id}`).onclick = () => {
+                  let newText = editTx.value.trim();
+                  // Silently re-append the massive file contents back into the prompt
+                  if (fileContents) newText = newText ? newText + '\n\n' + fileContents : fileContents;
+                  handleEditSave(msg.id, newText);
+                };
+
                 const adjustEditHeight = () => {
                   editTx.style.height = 'auto';
                   editTx.style.height = editTx.scrollHeight + 'px';
