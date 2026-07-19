@@ -1,6 +1,12 @@
 <?php
 session_start();
 
+// Outbound Link Redirector
+if (isset($_GET['redirect'])) {
+  header('Location: ' . $_GET['redirect']);
+  exit;
+}
+
 // PWA App Icon Route (Clean SVG with proper headers)
 if (isset($_GET['icon'])) {
   header('Content-Type: image/svg+xml; charset=utf-8');
@@ -393,22 +399,29 @@ if (isset($_GET['api'])) {
     $opts = [
       'http' => [
         'method'  => 'GET',
-        'header'  => "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36\r\nAccept-Language: en-US,en;q=0.5\r\n",
-        'timeout' => 1.5
+        'header'  => "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36\r\n" .
+                     "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8\r\n" .
+                     "Accept-Language: en-US,en;q=0.9\r\n" .
+                     "Referer: https://duckduckgo.com/\r\n",
+        'timeout' => 5.0 // Increased to 5s to prevent skipping DDG and falling back to Wikipedia
       ]
     ];
     $html = @file_get_contents('https://html.duckduckgo.com/html/?q=' . urlencode($query), false, stream_context_create($opts));
     
     if ($html && preg_match_all('/<a[^>]+class="[^"]*result__snippet[^"]*"[^>]+href="([^"]+)"[^>]*>(.*?)<\/a>/is', $html, $matches)) {
-      $limit = min(100, count($matches[1]));
+      $limit = min(15, count($matches[1])); // Limit to top 15 highly accurate results
       for ($i = 0; $i < $limit; $i++) {
         $rawUrl = $matches[1][$i];
         $text = trim(strip_tags($matches[2][$i]));
+        
+        // Clean up DDG redirect URLs strictly
         $url = $rawUrl;
         if (preg_match('/uddg=([^&]+)/', $rawUrl, $m)) {
           $url = urldecode($m[1]);
         }
-        if (!empty($text) && filter_var($url, FILTER_VALIDATE_URL)) {
+        
+        // Exclude internal DuckDuckGo tracker links
+        if (!empty($text) && filter_var($url, FILTER_VALIDATE_URL) && strpos($url, 'duckduckgo.com') === false) {
           $snippets[] = "- [Source: $url]\n  $text";
           $urls[] = $url;
         }
@@ -443,12 +456,16 @@ if (isset($_GET['api'])) {
     }
 
     if (!empty($snippets)) {
-      $searchContext = "[Web Search Context:]\n" . implode("\n\n", $snippets) . "\n\n(Base your answer on the above context. Cite your sources inline using brief, named hyperlinks like [Reuters](URL) or [Wikipedia](URL) matching the domain of the source. Do not write full raw URLs in parentheses.)\n\n";
+      // Limit accurate searches to a maximum of 15 sources
+      $snippets = array_slice($snippets, 0, 15);
+      $urls = array_slice(array_unique($urls), 0, 15);
+      
+      $searchContext = "[REAL-TIME WEB SEARCH RESULTS (Found " . count($urls) . " sources):]\n" . implode("\n\n", $snippets) . "\n\n[END OF WEB SEARCH RESULTS]\n\n";
     }
 
     jsonResponse([
       'context' => $searchContext, 
-      'urls' => array_slice(array_unique($urls), 0, 5)
+      'urls' => $urls ?? []
     ]);
   }
 
@@ -478,14 +495,17 @@ if (isset($_GET['api'])) {
     if (!empty($formattedMessages)) {
       $lastIdx = count($formattedMessages) - 1;
       
-      // Think Feature (Force reasoning prompt)
+      // Think Feature (Force or Prevent reasoning prompt)
       if (!empty($req['think'])) {
-        $appendStr = "\n\n(Please think step-by-step and wrap your detailed reasoning inside <think>...</think> tags before providing the final answer.)";
-        if ($isGemini) {
-          $formattedMessages[$lastIdx]['parts'][0]['text'] .= $appendStr;
-        } else {
-          $formattedMessages[$lastIdx]['content'] .= $appendStr;
-        }
+        $appendStr = "\n\n[MANDATORY SYSTEM COMMAND: You are in THINKING MODE. You MUST start your response with the literal `<think>` tag. You MUST write an extensive, detailed, and analytical thought process inside the `<think>` tags BEFORE providing your final answer. Do NOT skip this, and do NOT provide a short thought process. After closing with `</think>`, output your final answer directly.]";
+      } else {
+        $appendStr = "\n\n[SYSTEM COMMAND: Provide a direct answer. Do NOT use <think> tags. Do NOT output your internal reasoning process. Start your final answer immediately.]";
+      }
+      
+      if ($isGemini) {
+        $formattedMessages[$lastIdx]['parts'][0]['text'] .= $appendStr;
+      } else {
+        $formattedMessages[$lastIdx]['content'] .= $appendStr;
       }
     }
     
@@ -1406,18 +1426,54 @@ $isLoggedIn = getUserId() !== null;
         padding-left: 4px;
         margin-top: 8px;
       }
+      .message-file-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 12px;
+        padding: 10px 16px;
+        background: var(--md-sys-color-surface);
+        border: 1px solid var(--md-sys-color-outline);
+        border-radius: 12px;
+        margin: 8px 8px 8px 0;
+        cursor: pointer;
+        transition: background 0.2s, border-color 0.2s;
+        max-width: 300px;
+        vertical-align: top;
+      }
+      .message-file-pill:hover {
+        background: var(--md-sys-color-surface-variant);
+        border-color: var(--md-sys-color-primary);
+      }
+      .message-file-pill-icon {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: var(--md-sys-color-primary-container);
+        color: var(--md-sys-color-on-primary-container);
+        padding: 8px;
+        border-radius: 8px;
+      }
+      .message-file-pill-name {
+        font-size: 0.95rem;
+        font-weight: 500;
+        color: var(--md-sys-color-on-surface);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        flex: 1;
+      }
     </style>
   </head>
   <body class="dark">
     <div id="auth-screen">
-      <div class="auth-box">
+      <form class="auth-box" onsubmit="event.preventDefault(); handleAuth();">
         <h1 id="auth-title">Welcome back</h1>
-        <input type="text" id="auth-name" placeholder="Name" autocomplete="off" style="display: none;">
-        <input type="email" id="auth-email" placeholder="Email" autocomplete="off">
-        <input type="password" id="auth-pass" placeholder="Password">
-        <button onclick="handleAuth()">Continue</button>
+        <input type="text" id="auth-name" placeholder="Name" autocomplete="name" style="display: none;">
+        <input type="email" id="auth-email" placeholder="Email" autocomplete="email" required>
+        <input type="password" id="auth-pass" placeholder="Password" autocomplete="current-password" required>
+        <button type="submit">Continue</button>
         <div class="auth-switch" onclick="toggleAuthMode()" id="auth-switch-text">Don't have an account? Sign up</div>
-      </div>
+      </form>
     </div>
     
     <div id="app">
@@ -1488,6 +1544,37 @@ $isLoggedIn = getUserId() !== null;
           </div>
         </div>
       </main>
+    </div>
+
+    <!-- Sources Modal -->
+    <div id="sources-modal" class="modal">
+      <div class="modal-content" style="max-width: 600px;">
+        <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 16px;">
+          <h2 style="margin: 0; font-size: 1.1rem; font-weight: 500; color: var(--md-sys-color-on-surface);">Sources & References</h2>
+          <button onclick="closeSourcesModal()" style="padding: 6px; border-radius: 50%; background: var(--md-sys-color-surface-variant); display: flex; align-items: center; justify-content: center; cursor: pointer; border: 1px solid var(--md-sys-color-outline);">
+            <span class="material-symbols-outlined" style="font-size: 20px;">close</span>
+          </button>
+        </div>
+        <div id="sources-modal-content" style="display: flex; flex-direction: column; gap: 8px; max-height: 60vh; overflow-y: auto; margin-bottom: 8px;"></div>
+      </div>
+    </div>
+
+    <!-- File Preview Modal -->
+    <div id="file-modal" class="modal">
+      <div class="modal-content" style="max-width: 800px;">
+        <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 16px;">
+          <h2 id="file-modal-title" style="margin: 0; font-size: 1.1rem; font-weight: 500; word-break: break-all; color: var(--md-sys-color-on-surface);">File Name</h2>
+          <button onclick="closeFileModal()" style="padding: 6px; border-radius: 50%; background: var(--md-sys-color-surface-variant); display: flex; align-items: center; justify-content: center; cursor: pointer; border: 1px solid var(--md-sys-color-outline);">
+            <span class="material-symbols-outlined" style="font-size: 20px;">close</span>
+          </button>
+        </div>
+        <pre id="file-modal-content" style="background: var(--md-sys-color-surface); padding: 16px; border-radius: 12px; max-height: 60vh; overflow-y: auto; font-size: 0.9rem; white-space: pre-wrap; word-break: break-word; border: 1px solid var(--md-sys-color-outline); margin-bottom: 16px; color: var(--md-sys-color-on-surface); font-family: monospace;"></pre>
+        <div style="display: flex; justify-content: flex-end;">
+          <a id="file-modal-download" download href="#" class="btn-primary" style="text-decoration: none; display: inline-flex; align-items: center; gap: 8px;">
+            <span class="material-symbols-outlined" style="font-size: 20px;">download</span> Download File
+          </a>
+        </div>
+      </div>
     </div>
 
     <!-- Settings Modal -->
@@ -1758,7 +1845,19 @@ $isLoggedIn = getUserId() !== null;
         isLoginMode = !isLoginMode;
         document.getElementById('auth-title').textContent = isLoginMode ? 'Welcome back' : 'Create an account';
         document.getElementById('auth-switch-text').textContent = isLoginMode ? "Don't have an account? Sign up" : "Already have an account? Log in";
-        document.getElementById('auth-name').style.display = isLoginMode ? 'none' : 'block';
+        
+        const nameInput = document.getElementById('auth-name');
+        const passInput = document.getElementById('auth-pass');
+        
+        if (isLoginMode) {
+          nameInput.style.display = 'none';
+          nameInput.removeAttribute('required');
+          passInput.setAttribute('autocomplete', 'current-password');
+        } else {
+          nameInput.style.display = 'block';
+          nameInput.setAttribute('required', 'true');
+          passInput.setAttribute('autocomplete', 'new-password');
+        }
       }
 
       async function handleAuth() {
@@ -1913,10 +2012,86 @@ $isLoggedIn = getUserId() !== null;
         document.getElementById('new-pass-input').value = '';
       }
       
-      // Close modal when clicking/touching outside the container
+      function openFileModal(name, content, isBase64 = false) {
+        let finalName = name;
+        let finalContent = content;
+        if (isBase64) {
+          finalName = decodeURIComponent(escape(window.atob(name)));
+          finalContent = decodeURIComponent(escape(window.atob(content)));
+        }
+        
+        // Prevent UI freezing by strictly limiting text length rendered in the modal preview
+        let previewContent = finalContent;
+        if (previewContent.length > 3000) {
+          previewContent = previewContent.substring(0, 3000) + '\n\n... [File truncated for UI preview. Download to view the full file.]';
+        }
+        
+        document.getElementById('file-modal-title').textContent = finalName;
+        document.getElementById('file-modal-content').textContent = previewContent;
+        
+        // Ensure the download button still downloads the full untruncated content!
+        let downloadHref = 'data:text/plain;charset=utf-8,' + encodeURIComponent(finalContent);
+        const downloadBtn = document.getElementById('file-modal-download');
+        downloadBtn.href = downloadHref;
+        downloadBtn.download = finalName;
+        
+        document.getElementById('file-modal').classList.add('show');
+      }
+
+      function closeFileModal() {
+        document.getElementById('file-modal').classList.remove('show');
+      }
+      
+      function openSourcesModal(b64Urls) {
+        let urls = JSON.parse(decodeURIComponent(escape(window.atob(b64Urls))));
+        let container = document.getElementById('sources-modal-content');
+        container.innerHTML = '';
+        
+        urls.forEach((url, index) => {
+          let domain = getDomainName(url);
+          let a = document.createElement('a');
+          a.href = `?redirect=${encodeURIComponent(url)}`;
+          a.target = '_blank';
+          a.style.display = 'flex';
+          a.style.alignItems = 'center';
+          a.style.gap = '12px';
+          a.style.padding = '12px';
+          a.style.background = 'var(--md-sys-color-surface-variant)';
+          a.style.border = '1px solid var(--md-sys-color-outline)';
+          a.style.borderRadius = '12px';
+          a.style.textDecoration = 'none';
+          a.style.color = 'var(--md-sys-color-on-surface)';
+          a.style.transition = 'background 0.2s';
+          
+          a.onmouseover = () => a.style.background = 'var(--md-sys-color-primary-container)';
+          a.onmouseout = () => a.style.background = 'var(--md-sys-color-surface-variant)';
+          
+          a.innerHTML = `
+            <div style="background: var(--md-sys-color-background); width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 0.8rem; font-weight: bold; flex-shrink: 0;">${index + 1}</div>
+            <div style="flex: 1; min-width: 0;">
+              <div style="font-weight: 500; font-size: 0.95rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${domain}</div>
+              <div style="font-size: 0.8rem; color: var(--md-sys-color-outline); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${url}</div>
+            </div>
+            <span class="material-symbols-outlined" style="font-size: 18px; color: var(--md-sys-color-outline);">open_in_new</span>
+          `;
+          container.appendChild(a);
+        });
+        
+        document.getElementById('sources-modal').classList.add('show');
+      }
+
+      function closeSourcesModal() {
+        document.getElementById('sources-modal').classList.remove('show');
+      }
+
+      // Close modals when clicking/touching outside the container
       const handleModalOutClick = (e) => {
-        const modal = document.getElementById('settings-modal');
-        if (e.target === modal) closeSettings();
+        const settingsModal = document.getElementById('settings-modal');
+        const fileModal = document.getElementById('file-modal');
+        const sourcesModal = document.getElementById('sources-modal');
+        if (e.target === settingsModal) closeSettings();
+        if (e.target === fileModal) closeFileModal();
+        if (e.target === sourcesModal) closeSourcesModal();
       };
       window.addEventListener('click', handleModalOutClick);
       window.addEventListener('touchstart', handleModalOutClick, {passive: true});
@@ -2329,7 +2504,7 @@ $isLoggedIn = getUserId() !== null;
         messages.push(userMsg);
         activeLeafId = userMsg.id;
         saveMessageToDB(userMsg);
-        renderMessages();
+        renderMessages(true); // Force scroll down on new prompt
         await generateResponse(userMsg.id);
       }
 
@@ -2345,20 +2520,86 @@ $isLoggedIn = getUserId() !== null;
         };
         messages.push(aiMsg);
         activeLeafId = aiMsg.id;
-        renderMessages();
+        renderMessages(true); // Ensure AI response bubble starts at the bottom
         
         // Extract the exact timeline path for the current branch
         let contextPath = getThreadPath(parentMsgId);
         
-        // Keep all messages in the database/UI, but ONLY send the last 15 messages to the AI.
-        // This prevents exceeding API token limits and stops the AI from getting cut off mid-sentence.
-        const MAX_CONTEXT_MESSAGES = 15;
-        if (contextPath.length > MAX_CONTEXT_MESSAGES) {
-          contextPath = contextPath.slice(-MAX_CONTEXT_MESSAGES);
+        // Dynamically calculate allowed context limit instead of a hardcoded 15 message limit
+        const MAX_CONTEXT_CHARS = getDynamicCharLimit();
+        let accumulatedChars = 0;
+        let keepCount = 0;
+        
+        // Iterate backwards to keep the most recent messages up to the model's token capacity
+        for (let i = contextPath.length - 1; i >= 0; i--) {
+          accumulatedChars += contextPath[i].content.length;
+          if (accumulatedChars > MAX_CONTEXT_CHARS && keepCount > 0) break;
+          keepCount++;
+        }
+        
+        // Extract older messages that will be trimmed off (The Database History)
+        let trimmedMessages = [];
+        if (keepCount < contextPath.length) {
+          trimmedMessages = contextPath.slice(0, contextPath.length - keepCount);
+          contextPath = contextPath.slice(-keepCount);
+        }
+        
+        // Strictly ensure the first message is ALWAYS a 'user' message 
+        // (Google Gemini and strict HF models will throw a 400 error otherwise)
+        if (contextPath.length > 0 && contextPath[0].role !== 'user') {
+          if (contextPath.length > 1) {
+            trimmedMessages.push(contextPath.shift());
+          } else {
+            contextPath[0].role = 'user'; // Fallback if only 1 message exists
+          }
         }
 
         // Deep clone contextPath for the API payload to avoid mutating UI message bubbles
         let apiMessages = contextPath.map(m => ({ role: m.role, content: m.content }));
+
+        // Implement Persistent Memory (RAG-style Database Recall)
+        // This explicitly bypasses the context window limit by querying the trimmed history
+        if (trimmedMessages.length > 0 && apiMessages.length > 0) {
+          let lastUserText = apiMessages[apiMessages.length - 1].content.toLowerCase();
+          
+          // Extract keywords (words with 5+ characters to filter out common words like 'the', 'and')
+          let keywords = lastUserText.match(/\b[a-z]{5,}\b/g) || [];
+          keywords = [...new Set(keywords)];
+          
+          if (keywords.length > 0) {
+            // Score the old database messages based on keyword hits
+            let scoredMemories = trimmedMessages.map((m, idx) => {
+              let score = 0;
+              let lowerContent = m.content.toLowerCase();
+              keywords.forEach(kw => {
+                if (lowerContent.includes(kw)) score++;
+              });
+              return { ...m, score, origIdx: idx };
+            }).filter(m => m.score > 0);
+            
+            if (scoredMemories.length > 0) {
+              // Retrieve the top 5 most highly relevant past messages
+              scoredMemories.sort((a, b) => b.score - a.score);
+              let topMemories = scoredMemories.slice(0, 5);
+              
+              // Re-sort them back into chronological order so the AI understands the timeline
+              topMemories.sort((a, b) => a.origIdx - b.origIdx);
+              
+              // Build the memory injection block
+              let memoryString = "[System: Retrieved relevant past memories from the database for persistent context]\n";
+              topMemories.forEach(m => {
+                let role = m.role.toUpperCase();
+                let snippet = m.content.substring(0, 400); // Truncate individual memories to save tokens
+                if (m.content.length > 400) snippet += '...';
+                memoryString += `${role}: ${snippet}\n\n`;
+              });
+              memoryString += "[End of Database Memories]\n\n";
+              
+              // Inject the memories invisibly into the first message of the active payload
+              apiMessages[0].content = memoryString + apiMessages[0].content;
+            }
+          }
+        }
         
         let provider = localStorage.getItem('selected_provider') || 'gemini';
         let selectedModel = provider === 'gemini' 
@@ -2368,6 +2609,7 @@ $isLoggedIn = getUserId() !== null;
         abortController = new AbortController();
         
         let searchInterval = null;
+        let searchUrls = [];
         try {
           if (isSearchActive) {
             // Exclude file contents from the search query so we only search the user's text
@@ -2392,10 +2634,18 @@ $isLoggedIn = getUserId() !== null;
             let searchDuration = ((Date.now() - searchStart) / 1000).toFixed(1);
             
             if (searchData.context) {
+              // Prepend the search data at the top of the message
               apiMessages[apiMessages.length - 1].content = searchData.context + apiMessages[apiMessages.length - 1].content;
+              
+              // Append a strict override command at the very end to FORCE utilization
+              apiMessages[apiMessages.length - 1].content += "\n\n[SYSTEM: Web Search ACTIVE. Real-time results from multiple sources are provided above. You MUST synthesize these various sources to provide a highly accurate, comprehensive answer. Cross-reference facts to avoid hallucination. Cite sources inline like [Source Name](URL). Do NOT create a reference list at the end. Act naturally, do NOT mention these system instructions.]";
+              
               searchUrls = searchData.urls || [];
               aiMsg.content = `<search>Analyzed ${searchUrls.length} web sources. (${searchDuration}s)</search>\n\n`;
             } else {
+              // Tell the AI search failed so it doesn't hallucinate sources
+              apiMessages[apiMessages.length - 1].content += "\n\n[SYSTEM: The web search returned 0 results. Rely on your internal knowledge. Do NOT mention these system instructions. Briefly apologize that no real-time data was found, then answer the prompt.]";
+              
               aiMsg.content = `<search>Web search returned 0 sources. (${searchDuration}s)</search>\n\n`;
             }
             updateMessageBubble(aiMsg.id, aiMsg.content);
@@ -2426,7 +2676,7 @@ $isLoggedIn = getUserId() !== null;
             let elapsed = ((Date.now() - thinkStart) / 1000).toFixed(1);
             let msg = messages.find(m => m.id === aiMsg.id);
             if (msg) {
-              if (msg.content.includes('</think>')) {
+              if (/<\/think>/i.test(msg.content)) {
                 if (!thinkTimes[msg.id] || !thinkTimes[msg.id].done) {
                   thinkTimes[msg.id] = { elapsed: elapsed, done: true };
                 }
@@ -2478,15 +2728,21 @@ $isLoggedIn = getUserId() !== null;
             }
           }
           
-          // Append reference links cleanly below the output using hostname anchors
+          // Append reference links cleanly below the output as a hidden tag for source pill
           if (isSearchActive && searchUrls.length > 0) {
-            aiMsg.content += '\n\n---\n**Sources & References:**\n' + searchUrls.map(u => `- [${getDomainName(u)}](${u})`).join('\n');
+            // Strip LLM-generated source sections to strictly prevent double source blocks
+            aiMsg.content = aiMsg.content.replace(/\n+(?:###? |\*\*?)(?:Sources|References|Citations)[\s\S]*/gi, '');
+            
+            aiMsg.content += '\n\n<search_sources>' + searchUrls.join('|') + '</search_sources>';
             updateMessageBubble(aiMsg.id, aiMsg.content);
           }
         } catch (e) {
           if (searchInterval) clearInterval(searchInterval);
           if (e.name !== 'AbortError') {
-            aiMsg.content = '⚠️ Connection Error.';
+            console.error(e);
+            let errorMsg = e.message || 'Connection Error.';
+            // Append the error instead of deleting the generated text
+            aiMsg.content = aiMsg.content ? aiMsg.content + '\n\n⚠️ Error: ' + errorMsg : '⚠️ Error: ' + errorMsg;
             aiMsg.isError = true;
           }
         }
@@ -2579,6 +2835,9 @@ $isLoggedIn = getUserId() !== null;
 
       function cleanSearchQuery(query) {
         let clean = query
+          .replace(/search on the internet for accurate information about/gi, '')
+          .replace(/search on the internet for/gi, '')
+          .replace(/search the internet for/gi, '')
           .replace(/search on the internet about/gi, '')
           .replace(/search the web for/gi, '')
           .replace(/search the internet about/gi, '')
@@ -2592,6 +2851,7 @@ $isLoggedIn = getUserId() !== null;
           .replace(/who is/gi, '')
           .replace(/what is/gi, '')
           .replace(/please/gi, '')
+          .replace(/^ok,?\s*/gi, '')
           .replace(/[!?.()]/g, '')
           .trim();
         
@@ -2610,31 +2870,49 @@ $isLoggedIn = getUserId() !== null;
         let searchContent = '';
         let mainContent = text;
 
-        // Clean up raw paragraph markdown links where the link text is just a long raw URL
-        mainContent = mainContent.replace(/\[(https?:\/\/[^\s\]]+)\]\(\1\)/gi, (match, url) => {
-          return `[${getDomainName(url)}](${url})`;
+        // Safely format markdown links and apply the redirect proxy
+        mainContent = mainContent.replace(/\[([^\]]+)\]\((https?:\/\/[^\s\)]+)\)/gi, (match, text, url) => {
+          let displayText = (text === url || text.length > 50) ? getDomainName(url) : text;
+          return `[${displayText}](?redirect=${encodeURIComponent(url)})`;
         });
 
-        // Clean up standalone URLs in parentheses, converting e.g. (https://reuters.com/xyz) to ([reuters.com](url))
-        mainContent = mainContent.replace(/\((https?:\/\/[^\s\)]+)\)/gi, (match, url) => {
-          return `([${getDomainName(url)}](${url}))`;
+        // Clean up remaining standalone URLs in parentheses without breaking markdown
+        mainContent = mainContent.replace(/(^|[^\]])\((https?:\/\/[^\s\)]+)\)/gi, (match, prefix, url) => {
+          return `${prefix}([${getDomainName(url)}](?redirect=${encodeURIComponent(url)}))`;
         });
         
-        // Extract ALL search blocks
-        const searchRegex = /<search>([\s\S]*?)(?:<\/search>|$)/gi;
-        let sMatch;
-        while ((sMatch = searchRegex.exec(mainContent)) !== null) {
-          searchContent += sMatch[1].trim() + ' ';
-        }
-        mainContent = mainContent.replace(/<search>[\s\S]*?(?:<\/search>|$)/gi, '').trim();
+        // Extract ALL search blocks safely
+        mainContent = mainContent.replace(/<search>([\s\S]*?)<\/search>/gi, (match, p1) => {
+          searchContent += p1.trim() + ' ';
+          return '';
+        });
+        mainContent = mainContent.replace(/<search>([\s\S]*)$/i, (match, p1) => {
+          searchContent += p1.trim() + ' ';
+          return '';
+        });
+        mainContent = mainContent.trim();
 
-        // Extract ALL think blocks
-        const thinkRegex = /<think>([\s\S]*?)(?:<\/think>|$)/gi;
-        let match;
-        while ((match = thinkRegex.exec(mainContent)) !== null) {
-          thinkContent += match[1].trim() + '\n\n';
-        }
-        mainContent = mainContent.replace(/<think>[\s\S]*?(?:<\/think>|$)/gi, '').trim();
+        // Extract ALL think blocks safely to prevent layout breaches (Handles spaces and <thought> variations)
+        mainContent = mainContent.replace(/<\s*(?:think|thinking|thought)\s*>([\s\S]*?)<\s*\/\s*(?:think|thinking|thought)\s*>/gi, (match, p1) => {
+          thinkContent += (p1.trim() || '*(Model bypassed internal reasoning)*') + '\n\n';
+          return '';
+        });
+        mainContent = mainContent.replace(/<\s*(?:think|thinking|thought)\s*>([\s\S]*)$/i, (match, p1) => {
+          thinkContent += (p1.trim() || '*(Thinking...)*') + '\n\n';
+          return '';
+        });
+        
+        // Clean up leftover empty markdown blocks if the AI hallucinated backticks around the think tag
+        mainContent = mainContent.replace(/```(?:html|xml|markdown|md)?\s*```/gi, '');
+        mainContent = mainContent.trim();
+
+        // Extract Sources block safely
+        let sourcesContent = '';
+        mainContent = mainContent.replace(/<search_sources>([\s\S]*?)<\/search_sources>/gi, (match, p1) => {
+          sourcesContent = p1.trim();
+          return '';
+        });
+        mainContent = mainContent.trim();
 
         let html = '';
 
@@ -2652,7 +2930,7 @@ $isLoggedIn = getUserId() !== null;
         
         // Render the Thinking box separately
         if (thinkContent) {
-          const isClosed = text.includes('</think>');
+          const isClosed = /<\/think>/i.test(text);
           let summary = isClosed ? 'Thought Process' : 'Thinking...';
           const openAttr = isClosed ? '' : 'open';
 
@@ -2677,11 +2955,30 @@ $isLoggedIn = getUserId() !== null;
           html += DOMPurify.sanitize(marked.parse(mainContent));
         }
         
+        // Render Sources Pill Button below the text
+        if (sourcesContent) {
+          let urls = sourcesContent.split('|').filter(u => u);
+          let count = urls.length;
+          // Base64 encode the URLs array so it doesn't break HTML attributes
+          let b64Urls = window.btoa(unescape(encodeURIComponent(JSON.stringify(urls))));
+          
+          html += `<div style="margin-top: 12px;">
+            <button onclick="openSourcesModal('${b64Urls}')" style="display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px; background: var(--md-sys-color-surface); border: 1px solid var(--md-sys-color-outline); border-radius: 16px; font-size: 0.85rem; font-weight: 500; color: var(--md-sys-color-on-surface-variant); cursor: pointer; transition: background 0.2s, border-color 0.2s;">
+              <span class="material-symbols-outlined" style="font-size: 16px;">public</span> ${count} searches
+            </button>
+          </div>`;
+        }
+        
         return html;
       }
 
-      function renderMessages() {
+      function renderMessages(forceScrollBottom = false) {
         const container = document.getElementById('chat-container');
+        
+        // Capture exact scroll position relative to bottom to prevent annoying jumps
+        const distFromBottom = container.scrollHeight - container.scrollTop;
+        const isAtBottom = (distFromBottom - container.clientHeight) < 50;
+        
         container.innerHTML = '';
         
         if (messages.length === 0) {
@@ -2721,8 +3018,23 @@ $isLoggedIn = getUserId() !== null;
                 .replace(/"/g, "&quot;")
                 .replace(/'/g, "&#039;");
               
-              // Parse files into pills instead of raw text
-              safeText = safeText.replace(/\[File: (.*?)\]\n[\s\S]*?\n\[End of File\]/g, '<div class="file-pill" style="display:inline-flex; margin:4px 4px 4px 0; background:rgba(0,0,0,0.1); border:none;"><span class="material-symbols-outlined" style="font-size:16px;">description</span> $1</div>');
+              // Parse files into clickable pills
+              safeText = safeText.replace(/\[File: (.*?)\]\n([\s\S]*?)\n\[End of File\]/g, (match, fName, fContent) => {
+                let rawContent = fContent.replace(/&#039;/g, "'").replace(/&quot;/g, '"').replace(/&gt;/g, ">").replace(/&lt;/g, "<").replace(/&amp;/g, "&");
+                let rawFName = fName.replace(/&#039;/g, "'").replace(/&quot;/g, '"').replace(/&gt;/g, ">").replace(/&lt;/g, "<").replace(/&amp;/g, "&");
+                
+                // Base64 encode the content safely so quotes don't break the HTML element attributes
+                let base64Content = window.btoa(unescape(encodeURIComponent(rawContent)));
+                let base64Name = window.btoa(unescape(encodeURIComponent(rawFName)));
+                
+                return `<div class="message-file-pill" onclick="openFileModal('${base64Name}', '${base64Content}', true)">
+                  <div class="message-file-pill-icon">
+                    <span class="material-symbols-outlined" style="font-size:20px;">description</span>
+                  </div>
+                  <div class="message-file-pill-name" title="${rawFName}">${fName}</div>
+                </div>`;
+              });
+              
               bubble.innerHTML = safeText;
             }
             else bubble.innerHTML = processContent(msg.content, msg.id);
@@ -2783,8 +3095,12 @@ $isLoggedIn = getUserId() !== null;
               let copyBtn = document.createElement('button');
               copyBtn.innerHTML = '<span class="material-symbols-outlined" style="font-size:16px;">content_copy</span>';
               copyBtn.onclick = () => {
-                // Remove both <think> and <search> blocks entirely when copying
-                let textToCopy = msg.content.replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/<search>[\s\S]*?<\/search>/gi, '').trim();
+                // Remove all <think>, <search>, and <search_sources> blocks entirely when copying
+                let textToCopy = msg.content
+                  .replace(/<\s*(?:think|thinking|thought)\s*>[\s\S]*?<\s*\/\s*(?:think|thinking|thought)\s*>/gi, '')
+                  .replace(/<search>[\s\S]*?<\/search>/gi, '')
+                  .replace(/<search_sources>[\s\S]*?<\/search_sources>/gi, '')
+                  .trim();
                 copyText(textToCopy);
                 copyBtn.innerHTML = '<span class="material-symbols-outlined" style="font-size:16px;">check</span>';
                 setTimeout(() => copyBtn.innerHTML = '<span class="material-symbols-outlined" style="font-size:16px;">content_copy</span>', 2000);
@@ -2802,9 +3118,14 @@ $isLoggedIn = getUserId() !== null;
         });
         attachCodeCopyButtons(container);
         document.getElementById('msg-input').disabled = isWaiting;
-        // Use requestAnimationFrame for a more reliable post-render scroll
+        
         requestAnimationFrame(() => {
-          setTimeout(() => { container.scrollTop = container.scrollHeight; }, 10);
+          if (forceScrollBottom || isAtBottom) {
+            container.scrollTop = container.scrollHeight;
+          } else {
+            // Seamlessly restore previous scroll position (prevents jump on edit/regenerate)
+            container.scrollTop = container.scrollHeight - distFromBottom;
+          }
         });
       }
 
@@ -2840,6 +3161,16 @@ $isLoggedIn = getUserId() !== null;
         const file = event.target.files[0];
         if (!file) return;
         
+        const allowedExtensions = ['.txt', '.md', '.json', '.csv'];
+        const fileName = file.name.toLowerCase();
+        const isValid = allowedExtensions.some(ext => fileName.endsWith(ext));
+        
+        if (!isValid) {
+          alert('Invalid file type! Strictly only .txt, .md, .json, and .csv files are supported.');
+          event.target.value = '';
+          return;
+        }
+
         const reader = new FileReader();
         reader.onload = function(e) {
           attachedFiles.push({
