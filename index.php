@@ -322,15 +322,14 @@ if (isset($_GET['api'])) {
   }
 
   if ($api === 'get_messages') {
-    $chatId = $_GET['chat_id'];
+    $chatId = $_GET['chat_id'] ?? '';
     
     $stmt = $db->prepare("SELECT id FROM chats WHERE id = ? AND user_id = ?");
     $stmt->execute([$chatId, $userId]);
     if (!$stmt->fetch()) jsonResponse([]);
     
-    // Load all messages for this chat so the branching tree never breaks visually.
-    // The API token limit is safely handled by Javascript on the frontend.
-    $stmt = $db->prepare("SELECT * FROM messages WHERE chat_id = ? ORDER BY created_at ASC");
+    // Fetch all messages for the chat sorted by rowid (preserves exact insertion order)
+    $stmt = $db->prepare("SELECT * FROM messages WHERE chat_id = ? ORDER BY rowid ASC");
     $stmt->execute([$chatId]);
     jsonResponse($stmt->fetchAll(PDO::FETCH_ASSOC));
   }
@@ -1586,9 +1585,9 @@ $isLoggedIn = getUserId() !== null;
         </div>
         <pre id="file-modal-content" style="background: var(--md-sys-color-surface); padding: 16px; border-radius: 12px; max-height: 60vh; overflow-y: auto; font-size: 0.9rem; white-space: pre-wrap; word-break: break-word; border: 1px solid var(--md-sys-color-outline); margin-bottom: 16px; color: var(--md-sys-color-on-surface); font-family: monospace;"></pre>
         <div style="display: flex; justify-content: flex-end;">
-          <a id="file-modal-download" download href="#" class="btn-primary" style="text-decoration: none; display: inline-flex; align-items: center; gap: 8px;">
+          <button id="file-modal-download" class="btn-primary" style="display: inline-flex; align-items: center; gap: 8px;">
             <span class="material-symbols-outlined" style="font-size: 20px;">download</span> Download File
-          </a>
+          </button>
         </div>
       </div>
     </div>
@@ -1788,8 +1787,6 @@ $isLoggedIn = getUserId() !== null;
       let searchQuery = '';
       let chatPage = 1;
       let hasMoreChats = false;
-      let messagePage = 1;
-      let hasMoreMessages = false;
       
       let isSearchActive = localStorage.getItem('isSearchActive') === 'true';
       let isThinkActive = localStorage.getItem('isThinkActive') === 'true';
@@ -2045,11 +2042,21 @@ $isLoggedIn = getUserId() !== null;
         document.getElementById('file-modal-title').textContent = finalName;
         document.getElementById('file-modal-content').textContent = previewContent;
         
-        // Ensure the download button still downloads the full untruncated content!
-        let downloadHref = 'data:text/plain;charset=utf-8,' + encodeURIComponent(finalContent);
         const downloadBtn = document.getElementById('file-modal-download');
-        downloadBtn.href = downloadHref;
-        downloadBtn.download = finalName;
+        const newDownloadBtn = downloadBtn.cloneNode(true);
+        downloadBtn.parentNode.replaceChild(newDownloadBtn, downloadBtn);
+        
+        newDownloadBtn.addEventListener('click', () => {
+          const blob = new Blob([finalContent], { type: 'text/plain;charset=utf-8' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = finalName;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          URL.revokeObjectURL(url);
+        });
         
         document.getElementById('file-modal').classList.add('show');
       }
@@ -2270,8 +2277,6 @@ $isLoggedIn = getUserId() !== null;
         document.getElementById('topbar-title').textContent = "PHPChatAI";
         messages = [];
         activeLeafId = null;
-        messagePage = 1;
-        hasMoreMessages = false;
         renderChatList();
         renderMessages();
         if (window.innerWidth <= 768) {
@@ -2284,11 +2289,17 @@ $isLoggedIn = getUserId() !== null;
         currentChatId = id;
         if (push) updateURL(id);
         
-        // Dynamic title change matching active chat
+        const container = document.getElementById('chat-container');
+        container.innerHTML = `
+          <div style="margin: auto; display: flex; flex-direction: column; align-items: center; justify-content: center;">
+            <div class="spinner" style="width: 40px; height: 40px; border-width: 4px;"></div>
+            <p style="margin-top: 12px; color: var(--md-sys-color-on-surface-variant); font-size: 0.9rem;">Loading messages...</p>
+          </div>
+        `;
+
         const activeChat = chats.find(c => c.id === id);
         let titleText = activeChat ? activeChat.title : "PHPChatAI";
         
-        // Strictly limit UI header title to 60 characters for layout safety
         if (titleText.length > 60) {
           titleText = titleText.substring(0, 60) + '...';
         }
@@ -2301,36 +2312,21 @@ $isLoggedIn = getUserId() !== null;
           document.title = "PHPChatAI";
         }
 
-        const res = await fetch(`?api=get_messages&chat_id=${id}`);
-        messages = await res.json();
-        activeLeafId = messages.length > 0 ? messages[messages.length - 1].id : null;
+        try {
+          // Fetch all messages for the current chat thread
+          const res = await fetch(`?api=get_messages&chat_id=${id}`);
+          messages = await res.json();
+          // The last element is chronologically the latest message, acting as the starting active leaf node
+          activeLeafId = messages.length > 0 ? messages[messages.length - 1].id : null;
+        } catch (e) {
+          console.error("Failed to fetch messages:", e);
+        }
+
         renderChatList();
-        renderMessages();
+        renderMessages(true); // Force scroll to the bottom on initial chat load
         if (window.innerWidth <= 768) {
           document.getElementById('sidebar').classList.remove('open');
           document.getElementById('overlay').classList.remove('show');
-        }
-      }
-
-      async function loadMoreMessages() {
-        if (!currentChatId || !hasMoreMessages) return;
-        messagePage++;
-        const res = await fetch(`?api=get_messages&chat_id=${currentChatId}&page=${messagePage}`);
-        const olderMessages = await res.json();
-        
-        hasMoreMessages = olderMessages.length === 25;
-        if (olderMessages.length > 0) {
-          const existingIds = new Set(messages.map(m => m.id));
-          const uniqueOlder = olderMessages.filter(m => !existingIds.has(m.id));
-          messages = [...uniqueOlder, ...messages];
-          
-          const container = document.getElementById('chat-container');
-          const previousScrollHeight = container.scrollHeight;
-          
-          renderMessages(false); // Render without autoscrolling down
-          
-          // Maintain exact scroll position smoothly
-          container.scrollTop = container.scrollHeight - previousScrollHeight;
         }
       }
 
@@ -3134,7 +3130,8 @@ $isLoggedIn = getUserId() !== null;
               let copyUserBtn = document.createElement('button');
               copyUserBtn.innerHTML = '<span class="material-symbols-outlined" style="font-size:16px;">content_copy</span>';
               copyUserBtn.onclick = () => {
-                copyText(msg.content);
+                let textToCopy = msg.content.replace(/\[File: (.*?)\]\n([\s\S]*?)\n\[End of File\]/g, '').trim();
+                copyText(textToCopy);
                 copyUserBtn.innerHTML = '<span class="material-symbols-outlined" style="font-size:16px;">check</span>';
                 setTimeout(() => copyUserBtn.innerHTML = '<span class="material-symbols-outlined" style="font-size:16px;">content_copy</span>', 2000);
               };
@@ -3218,14 +3215,13 @@ $isLoggedIn = getUserId() !== null;
         attachCodeCopyButtons(container);
         document.getElementById('msg-input').disabled = isWaiting;
         
-        requestAnimationFrame(() => {
-          if (forceScrollBottom || isAtBottom) {
-            container.scrollTop = container.scrollHeight;
-          } else {
-            // Seamlessly restore previous scroll position (prevents jump on edit/regenerate)
-            container.scrollTop = container.scrollHeight - distFromBottom;
-          }
-        });
+        // Restore scroll position synchronously to prevent intermediate layout jumps and race conditions
+        if (forceScrollBottom || isAtBottom) {
+          container.scrollTop = container.scrollHeight;
+        } else {
+          // Seamlessly restore previous scroll position
+          container.scrollTop = container.scrollHeight - distFromBottom;
+        }
       }
 
       function renderAttachments() {
@@ -3364,7 +3360,6 @@ $isLoggedIn = getUserId() !== null;
         if (chatContainer) {
           chatContainer.addEventListener('scroll', () => {
             const btn = document.getElementById('scroll-to-bottom-btn');
-            // Use Math.ceil to prevent fractional pixel bugs, lower threshold to 100 so it hides properly at the very bottom
             const offset = Math.ceil(chatContainer.scrollHeight - chatContainer.clientHeight - chatContainer.scrollTop);
             if (offset > 100) {
               btn.classList.add('show');
