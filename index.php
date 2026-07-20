@@ -129,6 +129,8 @@ try {
     PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION
   ]);
   $db->exec("PRAGMA busy_timeout = 5000");
+  $db->exec("PRAGMA journal_mode = WAL");
+  $db->exec("PRAGMA synchronous = NORMAL");
 } catch (Exception $e) {
   die("Database connection failed.");
 }
@@ -138,6 +140,10 @@ $db->exec("CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMEN
 $db->exec("CREATE TABLE IF NOT EXISTS chats (id TEXT PRIMARY KEY, user_id INTEGER, title TEXT, pinned INTEGER DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)");
 $db->exec("CREATE TABLE IF NOT EXISTS messages (id TEXT PRIMARY KEY, chat_id TEXT, parent_id TEXT, role TEXT, content TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)");
 $db->exec("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)");
+
+// Create Indexes to make chat loading lightning fast
+$db->exec("CREATE INDEX IF NOT EXISTS idx_messages_chat_id ON messages(chat_id)");
+$db->exec("CREATE INDEX IF NOT EXISTS idx_chats_user_id ON chats(user_id)");
 
 // Smart migrations for missing columns in users table
 $userCols = [];
@@ -395,59 +401,64 @@ if (isset($_GET['api'])) {
     $urls = [];
     $snippets = [];
 
-    // Attempt 1: Google News RSS (Highly reliable, diverse news sources)
-    $newsUrl = 'https://news.google.com/rss/search?q=' . urlencode($query) . '&hl=en-US&gl=US&ceid=US:en';
-    $newsOpts = [
+    // Attempt 1: SearXNG Public Rotator (Fast, No RSS, Clean URLs)
+    $searxInstances = [
+      'https://searx.be', 'https://paulgo.io', 'https://search.mdosch.de',
+      'https://searx.tiekoetter.com', 'https://search.inetol.net'
+    ];
+    shuffle($searxInstances);
+    
+    $searxOpts = [
       'http' => [
         'method'  => 'GET',
-        'header'  => "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36\r\n",
-        'timeout' => 5.0
+        'header'  => "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)\r\nAccept: application/json\r\n",
+        'timeout' => 1.2 // Reduced timeout to prevent thread blocks on slow servers
       ]
     ];
-    $newsXml = @file_get_contents($newsUrl, false, stream_context_create($newsOpts));
-    if ($newsXml) {
-      $xml = @simplexml_load_string($newsXml);
-      if ($xml && isset($xml->channel->item)) {
-        $count = 0;
-        foreach ($xml->channel->item as $item) {
-          if ($count >= 15) break; // Limit to top 15 news articles
-          $title = trim((string)$item->title);
-          $url = trim((string)$item->link);
-          $desc = trim(strip_tags((string)$item->description));
-          if (!empty($url) && !in_array($url, $urls)) {
-            $snippets[] = "- [Source: $url]\n  Title: $title\n  Summary: $desc";
-            $urls[] = $url;
-            $count++;
+
+    $searxAttempts = 0;
+    foreach ($searxInstances as $instance) {
+      if ($searxAttempts >= 2) break; // Cap at 2 attempts to maintain fast overall response cycles
+      $searxAttempts++;
+      $searxJson = @file_get_contents($instance . '/search?q=' . urlencode($query) . '&format=json', false, stream_context_create($searxOpts));
+      if ($searxJson) {
+        $searxData = json_decode($searxJson, true);
+        if (!empty($searxData['results'])) {
+          foreach ($searxData['results'] as $result) {
+            if (count($urls) >= 15) break; // Top 15 results
+            $url = $result['url'] ?? '';
+            $title = $result['title'] ?? '';
+            $content = $result['content'] ?? '';
+            if ($url && $content && !in_array($url, $urls)) {
+              $snippets[] = "- [Source: $url]\n  Title: $title\n  Snippet: $content";
+              $urls[] = $url;
+            }
           }
+          break; // Stop loop once we get successful results
         }
       }
     }
 
-    // Attempt 2: DuckDuckGo Lite POST (Bypasses html.duckduckgo strict blocks)
-    $ddgOpts = [
-      'http' => [
-        'method'  => 'POST',
-        'header'  => "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36\r\n" .
-                     "Content-type: application/x-www-form-urlencoded\r\n" .
-                     "Referer: https://lite.duckduckgo.com/\r\n",
-        'content' => 'q=' . urlencode($query),
-        'timeout' => 5.0
-      ]
-    ];
-    $html = @file_get_contents('https://lite.duckduckgo.com/lite/', false, stream_context_create($ddgOpts));
-    
-    if ($html) {
-      // Parse DuckDuckGo Lite results safely
-      preg_match_all('/<a rel="nofollow" href="([^"]+)".*?>(.*?)<\/a>/is', $html, $linkMatches);
-      preg_match_all('/<td class=\'result-snippet\'>(.*?)<\/td>/is', $html, $descMatches);
-      
-      $limit = min(20, count($linkMatches[1]));
-      for ($i = 0; $i < $limit; $i++) {
-        $url = $linkMatches[1][$i];
-        if (filter_var($url, FILTER_VALIDATE_URL) && strpos($url, 'duckduckgo.com') === false) {
-          $title = trim(strip_tags($linkMatches[2][$i]));
-          $text = isset($descMatches[1][$i]) ? trim(strip_tags($descMatches[1][$i])) : '';
-          if (!in_array($url, $urls)) {
+    // Attempt 2: DuckDuckGo Lite POST (Fast fallback if SearXNG fails)
+    if (count($urls) < 5) {
+      $ddgOpts = [
+        'http' => [
+          'method'  => 'POST',
+          'header'  => "User-Agent: Mozilla/5.0 (Windows NT 10.0)\r\nContent-type: application/x-www-form-urlencoded\r\nReferer: https://lite.duckduckgo.com/\r\n",
+          'content' => 'q=' . urlencode($query),
+          'timeout' => 2.5
+        ]
+      ];
+      $html = @file_get_contents('https://lite.duckduckgo.com/lite/', false, stream_context_create($ddgOpts));
+      if ($html) {
+        preg_match_all('/<a rel="nofollow" href="([^"]+)".*?>(.*?)<\/a>/is', $html, $linkMatches);
+        preg_match_all('/<td class=\'result-snippet\'>(.*?)<\/td>/is', $html, $descMatches);
+        $limit = min(15, count($linkMatches[1]));
+        for ($i = 0; $i < $limit; $i++) {
+          $url = $linkMatches[1][$i];
+          if (filter_var($url, FILTER_VALIDATE_URL) && strpos($url, 'duckduckgo.com') === false && !in_array($url, $urls)) {
+            $title = trim(strip_tags($linkMatches[2][$i]));
+            $text = isset($descMatches[1][$i]) ? trim(strip_tags($descMatches[1][$i])) : '';
             $snippets[] = "- [Source: $url]\n  Title: $title\n  Snippet: $text";
             $urls[] = $url;
           }
@@ -455,45 +466,13 @@ if (isset($_GET['api'])) {
       }
     }
 
-    // Attempt 3: Fallback to Wikipedia Search API (Highly resilient on device IPs)
-    if (empty($snippets)) {
-      $wikiUrl = 'https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=' . urlencode($query) . '&format=json&utf8=';
-      $wikiOpts = [
-        'http' => [
-          'method' => 'GET',
-          'header' => "User-Agent: PHPChatAI/1.0 (https://github.com/yourusername/phpchatai)\r\n",
-          'timeout' => 2.0
-        ]
-      ];
-      $wikiJson = @file_get_contents($wikiUrl, false, stream_context_create($wikiOpts));
-      if ($wikiJson) {
-        $wikiData = json_decode($wikiJson, true);
-        if (isset($wikiData['query']['search'])) {
-          foreach ($wikiData['query']['search'] as $wResult) {
-            $title = $wResult['title'];
-            $text = trim(strip_tags($wResult['snippet']));
-            $url = 'https://en.wikipedia.org/wiki/' . str_replace(' ', '_', $title);
-            if (!empty($text) && !in_array($url, $urls)) {
-              $snippets[] = "- [Source: $url]\n  Title: $title\n  Snippet: $text";
-              $urls[] = $url;
-            }
-          }
-        }
-      }
-    }
-
     if (!empty($snippets)) {
-      // Limit accurate searches to a maximum of 100 sources
-      $snippets = array_slice($snippets, 0, 100);
-      $urls = array_slice(array_unique($urls), 0, 100);
-      
+      $snippets = array_slice($snippets, 0, 25);
+      $urls = array_slice($urls, 0, 25);
       $searchContext = "[REAL-TIME WEB SEARCH RESULTS (Found " . count($urls) . " sources):]\n" . implode("\n\n", $snippets) . "\n\n[END OF WEB SEARCH RESULTS]\n\n";
     }
 
-    jsonResponse([
-      'context' => $searchContext, 
-      'urls' => $urls ?? []
-    ]);
+    jsonResponse(['context' => $searchContext, 'urls' => $urls]);
   }
 
   if ($api === 'chat') {
@@ -524,9 +503,9 @@ if (isset($_GET['api'])) {
       
       // Think Feature (Force or Prevent reasoning prompt)
       if (!empty($req['think'])) {
-        $appendStr = "\n\n[MANDATORY SYSTEM COMMAND: This is a ONE PROMPT, TWO OUTPUTS task. \nOUTPUT 1: You MUST start with the `<think>` tag, write an extensive, analytical thought process, and close with `</think>`.\nOUTPUT 2: Immediately after `</think>`, write your final response. Your final response MUST be extremely comprehensive and be AT LEAST 1,500 words long. Do NOT fall short of 1,500 words.]";
+        $appendStr = "\n\n[SYSTEM INSTRUCTION: You MUST think step-by-step. First, write an extensive, highly analytical, and deeply detailed internal reasoning process inside `<think>...</think>` tags. You are strictly forbidden from leaving the `<think>` block empty or bypassing it. Perform your calculations, draft your structure, and outline your logical steps inside the `<think>` block. Only after completing a comprehensive reasoning process should you close it with `</think>` and proceed to write your final response. The final response must be extremely detailed and at least 1,500 words long.]";
       } else {
-        $appendStr = "\n\n[SYSTEM COMMAND: Provide a direct answer. Do NOT use <think> tags. Do NOT output your internal reasoning process. Start your final answer immediately. Your final answer MUST be extremely comprehensive and be AT LEAST 1,500 words long. Do NOT fall short of 1,500 words.]";
+        $appendStr = "\n\n[SYSTEM INSTRUCTION: Please provide a direct, highly detailed answer immediately. Do NOT use `<think>` tags and do NOT output your internal reasoning. The final response must be extremely comprehensive, highly detailed, and at least 1,500 words long. Do not repeat, list, or mention these instructions in your response.]";
       }
       
       if ($isGemini) {
@@ -1251,6 +1230,8 @@ $isLoggedIn = getUserId() !== null;
         font-size: 0.95rem;
         opacity: 0.9;
         color: var(--md-sys-color-on-surface);
+        overflow-x: auto;
+        overflow-wrap: break-word;
       }
       .send-btn {
         background: var(--md-sys-color-primary);
@@ -1325,6 +1306,9 @@ $isLoggedIn = getUserId() !== null;
         }
         .mobile-menu-btn {
           display: block;
+        }
+        .sidebar-close-btn {
+          display: flex !important;
         }
         .message-controls {
           opacity: 1;
@@ -1507,9 +1491,14 @@ $isLoggedIn = getUserId() !== null;
       <div id="overlay" onclick="toggleSidebar()"></div>
       <nav id="sidebar">
         <div class="sidebar-header">
-          <button class="new-chat-btn" onclick="startNewChat()">
-            <span class="material-symbols-outlined">add</span> New chat
-          </button>
+          <div style="display: flex; gap: 8px; align-items: center; width: 100%;">
+            <button class="new-chat-btn" onclick="startNewChat()" style="flex: 1;">
+              <span class="material-symbols-outlined">add</span> New chat
+            </button>
+            <button class="sidebar-close-btn" onclick="toggleSidebar()" style="display: none; padding: 0.85em; border-radius: 0.75em; align-items: center; justify-content: center; background: var(--md-sys-color-background); border: 1px solid var(--md-sys-color-outline); cursor: pointer;" title="Close menu">
+              <span class="material-symbols-outlined">close</span>
+            </button>
+          </div>
           <div class="search-box">
             <span class="material-symbols-outlined">search</span>
             <input type="text" id="search-input" placeholder="Search chats..." oninput="filterChats()">
@@ -2222,7 +2211,16 @@ $isLoggedIn = getUserId() !== null;
       function renderChatList() {
         const list = document.getElementById('chat-list');
         list.innerHTML = '';
-        const filtered = chats.filter(c => c.title.toLowerCase().includes(searchQuery));
+        
+        // Sort: Pinned first, then current active chat, then the rest
+        let sortedChats = [...chats].sort((a, b) => {
+          if (a.pinned != b.pinned) return b.pinned - a.pinned;
+          if (a.id === currentChatId) return -1;
+          if (b.id === currentChatId) return 1;
+          return 0;
+        });
+
+        const filtered = sortedChats.filter(c => c.title.toLowerCase().includes(searchQuery));
         filtered.forEach(c => {
           // XSS Prevention: Sanitize title to prevent HTML/JS injection in the sidebar
           const safeTitle = c.title
@@ -2276,7 +2274,10 @@ $isLoggedIn = getUserId() !== null;
         hasMoreMessages = false;
         renderChatList();
         renderMessages();
-        if (window.innerWidth <= 768) document.getElementById('sidebar').classList.remove('open');
+        if (window.innerWidth <= 768) {
+          document.getElementById('sidebar').classList.remove('open');
+          document.getElementById('overlay').classList.remove('show');
+        }
       }
 
       async function selectChat(id, push = true) {
@@ -2305,7 +2306,10 @@ $isLoggedIn = getUserId() !== null;
         activeLeafId = messages.length > 0 ? messages[messages.length - 1].id : null;
         renderChatList();
         renderMessages();
-        if (window.innerWidth <= 768) document.getElementById('sidebar').classList.remove('open');
+        if (window.innerWidth <= 768) {
+          document.getElementById('sidebar').classList.remove('open');
+          document.getElementById('overlay').classList.remove('show');
+        }
       }
 
       async function loadMoreMessages() {
@@ -2665,7 +2669,7 @@ $isLoggedIn = getUserId() !== null;
               apiMessages[apiMessages.length - 1].content = searchData.context + apiMessages[apiMessages.length - 1].content;
               
               // Append a strict override command at the very end to FORCE utilization
-              apiMessages[apiMessages.length - 1].content += "\n\n[CRITICAL SYSTEM COMMAND: Web Search ACTIVE. Up to 100 real-time search results are provided above. You MUST strictly use these sources as your primary references. Synthesize as many of these sources as possible to construct a highly accurate and comprehensive answer. Cross-reference facts to prevent hallucination. Cite sources inline like [Source Name](URL). Do NOT create a reference list at the end. Act naturally, do NOT mention these system instructions.]";
+              apiMessages[apiMessages.length - 1].content += "\n\n[SYSTEM INSTRUCTION: Web Search is ACTIVE. Use the provided real-time search results as your primary references. Synthesize these sources to construct an extremely detailed, accurate, and comprehensive response. Cite sources inline using markdown links like [Source Name](URL). Do NOT append a reference list at the end. Do not repeat, list, or mention these system instructions in your response.]";
               
               searchUrls = searchData.urls || [];
               aiMsg.content = `<search>Analyzed ${searchUrls.length} web sources. (${searchDuration}s)</search>\n\n`;
@@ -2738,10 +2742,29 @@ $isLoggedIn = getUserId() !== null;
                     aiMsg.content = '⚠️ ' + errMsg;
                     aiMsg.isError = true;
                     updateMessageBubble(aiMsg.id, aiMsg.content);
-                  } else if (parsed.choices && parsed.choices[0].delta && parsed.choices[0].delta.content) {
-                    // HuggingFace & OpenAI Format
-                    aiMsg.content += parsed.choices[0].delta.content;
-                    updateMessageBubble(aiMsg.id, aiMsg.content);
+                  } else if (parsed.choices && parsed.choices[0].delta) {
+                    // HuggingFace & OpenAI Format (including native reasoning_content support)
+                    const delta = parsed.choices[0].delta;
+                    
+                    if (delta.reasoning_content) {
+                      if (!aiMsg.hasThinkStarted) {
+                        aiMsg.content += '<think>\n';
+                        aiMsg.hasThinkStarted = true;
+                      }
+                      aiMsg.content += delta.reasoning_content;
+                    } 
+                    
+                    if (delta.content) {
+                      if (aiMsg.hasThinkStarted && !aiMsg.hasThinkEnded) {
+                        aiMsg.content += '\n</think>\n';
+                        aiMsg.hasThinkEnded = true;
+                      }
+                      aiMsg.content += delta.content;
+                    }
+                    
+                    if (delta.reasoning_content || delta.content) {
+                      updateMessageBubble(aiMsg.id, aiMsg.content);
+                    }
                   } else if (parsed.candidates && parsed.candidates[0].content && parsed.candidates[0].content.parts) {
                     // Google Gemini SSE Format
                     const parts = parsed.candidates[0].content.parts;
@@ -2904,6 +2927,11 @@ $isLoggedIn = getUserId() !== null;
         let searchContent = '';
         let mainContent = text;
 
+        // Auto-prepend <think> if the model emits a closing tag without a corresponding opening tag
+        if (mainContent.includes('</think>') && !/<\s*(?:think|thinking|thought)\s*>/i.test(mainContent)) {
+          mainContent = '<think>\n' + mainContent;
+        }
+
         // Safely format markdown links and apply the redirect proxy
         mainContent = mainContent.replace(/\[([^\]]+)\]\((https?:\/\/[^\s\)]+)\)/gi, (match, text, url) => {
           let displayText = (text === url || text.length > 50) ? getDomainName(url) : text;
@@ -2920,7 +2948,8 @@ $isLoggedIn = getUserId() !== null;
           searchContent += p1.trim() + ' ';
           return '';
         });
-        mainContent = mainContent.replace(/<search>([\s\S]*)$/i, (match, p1) => {
+        // Match unclosed search tags safely ONLY if they start at the very beginning of the message
+        mainContent = mainContent.replace(/^\s*<search>([\s\S]*)$/i, (match, p1) => {
           searchContent += p1.trim() + ' ';
           return '';
         });
@@ -2928,11 +2957,21 @@ $isLoggedIn = getUserId() !== null;
 
         // Extract ALL think blocks safely to prevent layout breaches (Handles spaces and <thought> variations)
         mainContent = mainContent.replace(/<\s*(?:think|thinking|thought)\s*>([\s\S]*?)<\s*\/\s*(?:think|thinking|thought)\s*>/gi, (match, p1) => {
-          thinkContent += (p1.trim() || '*(Model bypassed internal reasoning)*') + '\n\n';
+          const trimmed = p1.trim();
+          if (trimmed) {
+            thinkContent += trimmed + '\n\n';
+          }
           return '';
         });
-        mainContent = mainContent.replace(/<\s*(?:think|thinking|thought)\s*>([\s\S]*)$/i, (match, p1) => {
-          thinkContent += (p1.trim() || '*(Thinking...)*') + '\n\n';
+        
+        // Match unclosed think tags safely ONLY if they start at the very beginning of the message to prevent stray tags in the final response from swallowing content
+        mainContent = mainContent.replace(/^\s*<\s*(?:think|thinking|thought)\s*>([\s\S]*)$/i, (match, p1) => {
+          const trimmed = p1.trim();
+          if (trimmed) {
+            thinkContent += trimmed + '\n\n';
+          } else {
+            thinkContent += '*(Thinking...)*\n\n';
+          }
           return '';
         });
         
@@ -2966,7 +3005,7 @@ $isLoggedIn = getUserId() !== null;
         if (thinkContent) {
           const isClosed = /<\/think>/i.test(text);
           let summary = isClosed ? 'Thought Process' : 'Thinking...';
-          const openAttr = isClosed ? '' : 'open';
+          const openAttr = ''; // Collapsed by default always to avoid taking up screen space
 
           // Assign dynamic time stamp summary if timer information exists
           if (msgId && thinkTimes[msgId]) {
