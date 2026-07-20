@@ -7,121 +7,6 @@ if (isset($_GET['redirect'])) {
   exit;
 }
 
-// PWA App Icon Route (Clean SVG with proper headers)
-if (isset($_GET['icon'])) {
-  header('Content-Type: image/svg+xml; charset=utf-8');
-  ?>
-  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#4d6bfe">
-    <path d="m10.75 11.5l7.075-7.075q.3-.3.7-.3t.7.3t.3.7t-.3.7l-7.05 7.075zm2.475 2.475l6.35-6.375q.3-.3.713-.3t.712.3t.3.713t-.3.712l-6.35 6.35zm-7.95 4.75Q3 16.45 3 13.25t2.275-5.475l3-3L9.75 6.25q.175.175.3.363T10.3 7L14 3.275q.3-.3.713-.3t.712.3t.3.712t-.3.713L11.1 9.025l-2.125 2.1l.475.475q1.15 1.15 1.1 2.75t-1.225 2.775l-1.425-1.4q.575-.575.638-1.362T8.025 13L6.85 11.85q-.3-.3-.3-.712t.3-.713l1.425-1.4q.3-.3.3-.713t-.3-.712l-1.6 1.6q-1.7 1.7-1.7 4.063t1.7 4.062t4.075 1.7t4.075-1.7l5.975-6q.3-.3.713-.3t.712.3t.3.713t-.3.712l-6 5.975Q13.95 21 10.75 21t-5.475-2.275M17 23.025V21q1.65 0 2.825-1.175T21 17h2.025q0 2.5-1.763 4.263T17 23.025M.975 7q0-2.5 1.763-4.262T7 .974V3Q5.35 3 4.175 4.175T3 7z"/>
-  </svg>
-  <?php
-  exit;
-}
-
-// PWA Manifest and Service Worker Config (InfinityFree Compatible)
-if (isset($_GET['pwa'])) {
-  if ($_GET['pwa'] === 'manifest') {
-    header('Content-Type: application/manifest+json; charset=utf-8');
-    header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
-    echo json_encode([
-      'short_name' => 'PHPChatAI',
-      'name' => 'PHPChatAI System',
-      'icons' => [
-        [
-          'src' => '?icon=1',
-          'type' => 'image/svg+xml',
-          'sizes' => '512x512',
-          'purpose' => 'any maskable'
-        ],
-        [
-          'src' => '?icon=1',
-          'type' => 'image/svg+xml',
-          'sizes' => '192x192',
-          'purpose' => 'any'
-        ]
-      ],
-      'start_url' => './',
-      'scope' => './',
-      'background_color' => '#131415',
-      'theme_color' => '#131415',
-      'display' => 'standalone',
-      'orientation' => 'portrait'
-    ], JSON_UNESCAPED_SLASHES);
-    exit;
-  }
-
-  if ($_GET['pwa'] === 'sw') {
-    header('Content-Type: application/javascript; charset=utf-8');
-    header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
-    header('Service-Worker-Allowed: /');
-    ?>
-    const CACHE_NAME = 'PHPChatAI-cache-v5';
-    const ASSETS = [
-      './',
-      './index.php',
-      '?pwa=manifest',
-      '?icon=1',
-      'https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&display=swap',
-      'https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@24,400,0,0'
-    ];
-
-    self.addEventListener('install', (e) => {
-      e.waitUntil(
-        caches.open(CACHE_NAME).then((cache) => {
-          return cache.addAll(ASSETS).catch(() => {});
-        }).then(() => self.skipWaiting())
-      );
-    });
-
-    self.addEventListener('activate', (e) => {
-      e.waitUntil(
-        caches.keys().then((keys) => {
-          return Promise.all(
-            keys.map((key) => {
-              if (key !== CACHE_NAME) {
-                return caches.delete(key);
-              }
-            })
-          );
-        }).then(() => self.clients.claim())
-      );
-    });
-
-    self.addEventListener('fetch', (e) => {
-      const url = new URL(e.request.url);
-      
-      // Explicitly bypass cache for ALL database/API requests to force persistent memory
-      if (url.search.includes('api=')) {
-        e.respondWith(fetch(e.request));
-        return;
-      }
-      
-      e.respondWith(
-        fetch(e.request)
-          .then((res) => {
-            if (res && res.status === 200) {
-              const clone = res.clone();
-              caches.open(CACHE_NAME).then((cache) => {
-                cache.put(e.request, clone);
-              });
-            }
-            return res;
-          })
-          .catch(() => {
-            return caches.match(e.request).then((cachedRes) => {
-              if (cachedRes) return cachedRes;
-              if (e.request.mode === 'navigate') {
-                return caches.match('./') || caches.match('./index.php');
-              }
-            });
-          })
-      );
-    });
-    <?php
-    exit;
-  }
-}
-
 $dbFile = __DIR__ . '/phpchat.sqlite';
 try {
   $db = new PDO('sqlite:' . $dbFile, null, null, [
@@ -326,7 +211,7 @@ if (isset($_GET['api'])) {
     
     $stmt = $db->prepare("SELECT id FROM chats WHERE id = ? AND user_id = ?");
     $stmt->execute([$chatId, $userId]);
-    if (!$stmt->fetch()) jsonResponse([]);
+    if (!$stmt->fetch()) jsonResponse(['error' => 'Unauthorized']);
     
     // Fetch all messages for the chat sorted by rowid (preserves exact insertion order)
     $stmt = $db->prepare("SELECT * FROM messages WHERE chat_id = ? ORDER BY rowid ASC");
@@ -342,6 +227,24 @@ if (isset($_GET['api'])) {
     
     $stmt = $db->prepare("INSERT INTO messages (id, chat_id, parent_id, role, content) VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET content = excluded.content");
     $stmt->execute([$req['id'], $req['chat_id'], $req['parent_id'], $req['role'], $req['content']]);
+    
+    // Bump the chat timestamp so it moves to the top of the sidebar dynamically
+    $db->prepare("UPDATE chats SET created_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?")->execute([$req['chat_id'], $userId]);
+    
+    jsonResponse(['status' => 'success']);
+  }
+
+  if ($api === 'change_username') {
+    $req = json_decode(file_get_contents('php://input'), true);
+    $newUsername = trim($req['username'] ?? '');
+    
+    if (empty($newUsername)) jsonResponse(['error' => 'Username cannot be empty.']);
+    
+    $stmt = $db->prepare("SELECT id FROM users WHERE username = ? AND id != ?");
+    $stmt->execute([$newUsername, $userId]);
+    if ($stmt->fetch()) jsonResponse(['error' => 'Username already taken.']);
+    
+    $db->prepare("UPDATE users SET username = ? WHERE id = ?")->execute([$newUsername, $userId]);
     jsonResponse(['status' => 'success']);
   }
 
@@ -612,11 +515,6 @@ $isLoggedIn = getUserId() !== null;
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
     <title>PHPChatAI</title>
-    <link rel="manifest" href="?pwa=manifest" crossorigin="use-credentials">
-    <meta name="apple-mobile-web-app-capable" content="yes">
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <meta name="apple-mobile-web-app-title" content="PHPChatAI">
-    <link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%234d6bfe'%3E%3Cpath d='m10.75 11.5l7.075-7.075q.3-.3.7-.3t.7.3t.3.7t-.3.7l-7.05 7.075zm2.475 2.475l6.35-6.375q.3-.3.713-.3t.712.3t.3.713t-.3.712l-6.35 6.35zm-7.95 4.75Q3 16.45 3 13.25t2.275-5.475l3-3L9.75 6.25q.175.175.3.363T10.3 7L14 3.275q.3-.3.713-.3t.712.3t.3.712t-.3.713L11.1 9.025l-2.125 2.1l.475.475q1.15 1.15 1.1 2.75t-1.225 2.775l-1.425-1.4q.575-.575.638-1.362T8.025 13L6.85 11.85q-.3-.3-.3-.712t.3-.713l1.425-1.4q.3-.3.3-.713t-.3-.712l-1.6 1.6q-1.7 1.7-1.7 4.063t1.7 4.062t4.075 1.7t4.075-1.7l5.975-6q.3-.3.713-.3t.712.3t.3.713t-.3.712l-6 5.975Q13.95 21 10.75 21t-5.475-2.275M17 23.025V21q1.65 0 2.825-1.175T21 17h2.025q0 2.5-1.763 4.263T17 23.025M.975 7q0-2.5 1.763-4.262T7 .974V3Q5.35 3 4.175 4.175T3 7z'/%3E%3C/svg%3E">
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%234d6bfe'%3E%3Cpath d='m10.75 11.5l7.075-7.075q.3-.3.7-.3t.7.3t.3.7t-.3.7l-7.05 7.075zm2.475 2.475l6.35-6.375q.3-.3.713-.3t.712.3t.3.713t-.3.712l-6.35 6.35zm-7.95 4.75Q3 16.45 3 13.25t2.275-5.475l3-3L9.75 6.25q.175.175.3.363T10.3 7L14 3.275q.3-.3.713-.3t.712.3t.3.712t-.3.713L11.1 9.025l-2.125 2.1l.475.475q1.15 1.15 1.1 2.75t-1.225 2.775l-1.425-1.4q.575-.575.638-1.362T8.025 13L6.85 11.85q-.3-.3-.3-.712t.3-.713l1.425-1.4q.3-.3.3-.713t-.3-.712l-1.6 1.6q-1.7 1.7-1.7 4.063t1.7 4.062t4.075 1.7t4.075-1.7l5.975-6q.3-.3.713-.3t.712.3t.3.713t-.3.712l-6 5.975Q13.95 21 10.75 21t-5.475-2.275M17 23.025V21q1.65 0 2.825-1.175T21 17h2.025q0 2.5-1.763 4.263T17 23.025M.975 7q0-2.5 1.763-4.262T7 .974V3Q5.35 3 4.175 4.175T3 7z'/%3E%3C/svg%3E">
     
     <!-- Open Graph / Facebook -->
@@ -1505,9 +1403,6 @@ $isLoggedIn = getUserId() !== null;
         </div>
         <div class="chat-list" id="chat-list"></div>
         <div class="sidebar-footer">
-          <button class="sidebar-btn" id="install-pwa-btn" style="display: none;" onclick="triggerPwaInstall()">
-            <span class="material-symbols-outlined">download</span> Install App
-          </button>
           <button class="sidebar-btn" onclick="openSettings()">
             <span class="material-symbols-outlined">settings</span> Settings
           </button>
@@ -1714,10 +1609,15 @@ $isLoggedIn = getUserId() !== null;
         <!-- Account Tab -->
         <div id="tab-account" class="settings-tab-content">
           <div class="settings-section" style="border: none; padding-top: 0; margin-top: 0;">
-            <h3>Change Password</h3>
-            <input type="password" id="old-pass-input" placeholder="Old Password" autocomplete="new-password">
-            <input type="password" id="new-pass-input" placeholder="New Password" autocomplete="new-password">
-            <button class="btn-primary" onclick="updatePassword()" style="width: 100%; margin-top: 4px; padding: 10px; font-size: 0.9rem;">Change Password</button>
+            <h3>Account Settings</h3>
+            <div style="display: flex; flex-direction: column; gap: 12px; margin-top: 12px;">
+              <button class="new-chat-btn" onclick="openUsernameModal()" style="width: 100%;">
+                <span class="material-symbols-outlined" style="font-size: 20px;">badge</span> Change Username
+              </button>
+              <button class="new-chat-btn" onclick="openPasswordModal()" style="width: 100%;">
+                <span class="material-symbols-outlined" style="font-size: 20px;">lock_reset</span> Update Password
+              </button>
+            </div>
           </div>
         </div>
 
@@ -1727,7 +1627,7 @@ $isLoggedIn = getUserId() !== null;
             <div class="settings-section" style="border: none; padding-top: 0; margin-top: 0;">
               <h3>Admin API Tokens</h3>
               <div style="position: relative; display: flex; align-items: center; margin-bottom: 12px;">
-                <input type="password" id="hf-token-input" placeholder="HuggingFace API Token" style="margin-bottom: 0; padding-right: 80px;">
+                <input type="text" id="hf-token-input" placeholder="HuggingFace API Token" autocomplete="off" spellcheck="false" data-lpignore="true" style="-webkit-text-security: disc; margin-bottom: 0; padding-right: 80px;">
                 <div style="position: absolute; right: 16px; display: flex; gap: 12px; align-items: center; z-index: 10;">
                   <button type="button" onclick="toggleTokenVisibility('hf-token-input', 'hf-token-visibility-icon')" style="display: flex; align-items: center; justify-content: center; color: var(--md-sys-color-on-surface-variant); cursor: pointer;" title="Toggle Visibility">
                     <span class="material-symbols-outlined" id="hf-token-visibility-icon" style="font-size: 20px;">visibility_off</span>
@@ -1738,7 +1638,7 @@ $isLoggedIn = getUserId() !== null;
                 </div>
               </div>
               <div style="position: relative; display: flex; align-items: center;">
-                <input type="password" id="gemini-token-input" placeholder="Gemini API Token (AI Studio)" style="margin-bottom: 0; padding-right: 80px;">
+                <input type="text" id="gemini-token-input" placeholder="Gemini API Token (AI Studio)" autocomplete="off" spellcheck="false" data-lpignore="true" style="-webkit-text-security: disc; margin-bottom: 0; padding-right: 80px;">
                 <div style="position: absolute; right: 16px; display: flex; gap: 12px; align-items: center; z-index: 10;">
                   <button type="button" onclick="toggleTokenVisibility('gemini-token-input', 'gemini-token-visibility-icon')" style="display: flex; align-items: center; justify-content: center; color: var(--md-sys-color-on-surface-variant); cursor: pointer;" title="Toggle Visibility">
                     <span class="material-symbols-outlined" id="gemini-token-visibility-icon" style="font-size: 20px;">visibility_off</span>
@@ -1756,13 +1656,42 @@ $isLoggedIn = getUserId() !== null;
         <div id="tab-backup" class="settings-tab-content">
           <div class="settings-section" style="border: none; padding-top: 0; margin-top: 0;">
             <h3>Backup</h3>
-            <button class="btn-secondary" style="width:100%;" onclick="exportData()">Export Chats (JSON)</button>
+            <div style="margin-top: 12px;">
+              <button class="new-chat-btn" style="width:100%;" onclick="exportData()">
+                <span class="material-symbols-outlined" style="font-size: 20px;">download</span> Export Chats (JSON)
+              </button>
+            </div>
           </div>
         </div>
 
         <div class="btn-group" style="margin-top: 24px; border-top: 1px solid var(--md-sys-color-outline); padding-top: 16px;">
           <button class="btn-secondary" onclick="closeSettings()">Cancel</button>
           <button class="btn-primary" onclick="saveSettings()">Save</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Password Modal -->
+    <div id="password-modal" class="modal">
+      <div class="modal-content" style="max-width: 400px;">
+        <h2 style="margin-top: 0;">Update Password</h2>
+        <input type="password" id="old-pass-input" placeholder="Old Password" autocomplete="new-password">
+        <input type="password" id="new-pass-input" placeholder="New Password" autocomplete="new-password">
+        <div class="btn-group">
+          <button class="btn-secondary" onclick="closePasswordModal()">Cancel</button>
+          <button class="btn-primary" onclick="updatePassword()">Update</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Username Modal -->
+    <div id="username-modal" class="modal">
+      <div class="modal-content" style="max-width: 400px;">
+        <h2 style="margin-top: 0;">Change Username</h2>
+        <input type="text" id="new-username-input" placeholder="New Username" autocomplete="off">
+        <div class="btn-group">
+          <button class="btn-secondary" onclick="closeUsernameModal()">Cancel</button>
+          <button class="btn-primary" onclick="updateUsername()">Update</button>
         </div>
       </div>
     </div>
@@ -2021,8 +1950,25 @@ $isLoggedIn = getUserId() !== null;
 
       function closeSettings() {
         document.getElementById('settings-modal').classList.remove('show');
+      }
+
+      function openPasswordModal() {
         document.getElementById('old-pass-input').value = '';
         document.getElementById('new-pass-input').value = '';
+        document.getElementById('password-modal').classList.add('show');
+      }
+
+      function closePasswordModal() {
+        document.getElementById('password-modal').classList.remove('show');
+      }
+
+      function openUsernameModal() {
+        document.getElementById('new-username-input').value = '';
+        document.getElementById('username-modal').classList.add('show');
+      }
+
+      function closeUsernameModal() {
+        document.getElementById('username-modal').classList.remove('show');
       }
       
       function openFileModal(name, content, isBase64 = false) {
@@ -2112,9 +2058,13 @@ $isLoggedIn = getUserId() !== null;
         const settingsModal = document.getElementById('settings-modal');
         const fileModal = document.getElementById('file-modal');
         const sourcesModal = document.getElementById('sources-modal');
+        const passwordModal = document.getElementById('password-modal');
+        const usernameModal = document.getElementById('username-modal');
         if (e.target === settingsModal) closeSettings();
         if (e.target === fileModal) closeFileModal();
         if (e.target === sourcesModal) closeSourcesModal();
+        if (e.target === passwordModal) closePasswordModal();
+        if (e.target === usernameModal) closeUsernameModal();
       };
       window.addEventListener('click', handleModalOutClick);
       window.addEventListener('touchstart', handleModalOutClick, {passive: true});
@@ -2152,8 +2102,26 @@ $isLoggedIn = getUserId() !== null;
           alert(data.error);
         } else {
           alert("Password updated successfully!");
-          document.getElementById('old-pass-input').value = '';
-          document.getElementById('new-pass-input').value = '';
+          closePasswordModal();
+        }
+      }
+
+      async function updateUsername() {
+        const newUsername = document.getElementById('new-username-input').value.trim();
+        if (!newUsername) {
+          alert("Username cannot be empty.");
+          return;
+        }
+        const res = await fetch('?api=change_username', {
+          method: 'POST',
+          body: JSON.stringify({username: newUsername})
+        });
+        const data = await res.json();
+        if (data.error) {
+          alert(data.error);
+        } else {
+          alert("Username updated successfully!");
+          closeUsernameModal();
         }
       }
 
@@ -2315,7 +2283,13 @@ $isLoggedIn = getUserId() !== null;
         try {
           // Fetch all messages for the current chat thread
           const res = await fetch(`?api=get_messages&chat_id=${id}`);
-          messages = await res.json();
+          const data = await res.json();
+          
+          if (data.error === 'Unauthorized') {
+            return startNewChat(true); // Redirect immediately
+          }
+          
+          messages = data;
           // The last element is chronologically the latest message, acting as the starting active leaf node
           activeLeafId = messages.length > 0 ? messages[messages.length - 1].id : null;
         } catch (e) {
@@ -2379,8 +2353,14 @@ $isLoggedIn = getUserId() !== null;
       function getThreadPath(leafId) {
         let path = [];
         let currId = leafId;
+        let msgMap = new Map();
+        
+        for (let i = 0; i < messages.length; i++) {
+          msgMap.set(messages[i].id, messages[i]);
+        }
+        
         while (currId) {
-          let msg = messages.find(m => m.id === currId);
+          let msg = msgMap.get(currId);
           if (!msg) break;
           path.unshift(msg);
           currId = msg.parent_id;
@@ -2390,9 +2370,12 @@ $isLoggedIn = getUserId() !== null;
 
       function switchBranch(msgId, direction) {
         let msg = messages.find(m => m.id === msgId);
+        if (!msg) return;
+        
         let siblings = messages.filter(m => m.parent_id === msg.parent_id);
         let idx = siblings.findIndex(m => m.id === msgId);
         let targetIdx = idx + direction;
+        
         if (targetIdx >= 0 && targetIdx < siblings.length) {
           activeLeafId = findDeepestLeaf(siblings[targetIdx].id);
           renderMessages();
@@ -2400,9 +2383,21 @@ $isLoggedIn = getUserId() !== null;
       }
 
       function findDeepestLeaf(startId) {
-        let children = messages.filter(m => m.parent_id === startId);
-        if (children.length === 0) return startId;
-        return findDeepestLeaf(children[children.length - 1].id);
+        let childrenMap = new Map();
+        
+        for (let i = 0; i < messages.length; i++) {
+          let pid = messages[i].parent_id;
+          if (!childrenMap.has(pid)) childrenMap.set(pid, []);
+          childrenMap.get(pid).push(messages[i]);
+        }
+        
+        function traverse(id) {
+          let children = childrenMap.get(id) || [];
+          if (children.length === 0) return id;
+          return traverse(children[children.length - 1].id);
+        }
+        
+        return traverse(startId);
       }
 
       async function saveMessageToDB(msg) {
@@ -2410,6 +2405,18 @@ $isLoggedIn = getUserId() !== null;
           method: 'POST',
           body: JSON.stringify(msg)
         });
+        
+        // Update latest chat in sidebar via server silently
+        fetch(`?api=get_chats&page=1`)
+          .then(res => res.json())
+          .then(data => {
+            const existingCurrentChat = chats.find(c => c.id === currentChatId);
+            chats = data;
+            if (currentChatId && !chats.find(c => c.id === currentChatId) && existingCurrentChat) {
+              chats.push(existingCurrentChat);
+            }
+            renderChatList();
+          });
       }
 
       const inputEl = document.getElementById('msg-input');
@@ -2517,8 +2524,6 @@ $isLoggedIn = getUserId() !== null;
             method: 'POST',
             body: JSON.stringify({id: currentChatId, title})
           });
-          chats.unshift({id: currentChatId, title: title, pinned: 0});
-          renderChatList();
         }
         
         let userMsg = {
@@ -3048,8 +3053,6 @@ $isLoggedIn = getUserId() !== null;
         const distFromBottom = container.scrollHeight - container.scrollTop;
         const isAtBottom = (distFromBottom - container.clientHeight) < 50;
         
-        container.innerHTML = '';
-        
         if (messages.length === 0) {
           container.innerHTML = `
             <div style="margin:auto; text-align:center; opacity:0.8; animation: fadeIn 0.5s ease; display: flex; flex-direction: column; align-items: center; justify-content: center;">
@@ -3061,13 +3064,45 @@ $isLoggedIn = getUserId() !== null;
             </div>`;
           return;
         }
+
+        // Remove welcome screen block if messages exist
+        if (container.children.length === 1 && !container.children[0].classList.contains('message-row')) {
+          container.innerHTML = '';
+        }
+
         let path = getThreadPath(activeLeafId);
-        path.forEach((msg) => {
+        let existingRows = Array.from(container.querySelectorAll('.message-row'));
+        
+        let mismatchIndex = existingRows.length;
+        for (let i = 0; i < path.length; i++) {
+          if (!existingRows[i] || existingRows[i].getAttribute('data-msg-id') !== path[i].id) {
+            mismatchIndex = i;
+            break;
+          }
+        }
+
+        // Drop trailing extra/mismatched rows natively from DOM
+        for (let i = mismatchIndex; i < existingRows.length; i++) {
+          existingRows[i].remove();
+        }
+
+        // Always re-render the very last known message to append action controls properly when waiting concludes
+        let startIndex = Math.max(0, mismatchIndex);
+        if (startIndex > 0 && startIndex === path.length) {
+          startIndex = startIndex - 1;
+          existingRows[startIndex].remove();
+        }
+
+        // Only generate exactly what changed/appended (Lazy Rendering Loop)
+        for (let i = startIndex; i < path.length; i++) {
+          let msg = path[i];
           let siblings = messages.filter(m => m.parent_id === msg.parent_id);
           let bIndex = siblings.findIndex(m => m.id === msg.id);
           
           let div = document.createElement('div');
           div.className = `message-row ${msg.role}`;
+          div.setAttribute('data-msg-id', msg.id); // Add sync ID
+          
           let wrapper = document.createElement('div');
           wrapper.className = 'message-content-wrapper';
           let bubble = document.createElement('div');
@@ -3211,7 +3246,8 @@ $isLoggedIn = getUserId() !== null;
           }
           div.appendChild(wrapper);
           container.appendChild(div);
-        });
+        }
+        
         attachCodeCopyButtons(container);
         document.getElementById('msg-input').disabled = isWaiting;
         
@@ -3288,46 +3324,16 @@ $isLoggedIn = getUserId() !== null;
         document.getElementById('scroll-to-bottom-btn').classList.remove('show');
       }
 
-      let deferredPrompt = null;
-
-      // Capture browser's installation event eligibility
-      window.addEventListener('beforeinstallprompt', (e) => {
-        e.preventDefault();
-        deferredPrompt = e;
-        const installBtn = document.getElementById('install-pwa-btn');
-        if (installBtn) {
-          installBtn.style.display = 'flex'; // Show button when installer is ready
-        }
-      });
-
-      async function triggerPwaInstall() {
-        if (!deferredPrompt) return;
-        deferredPrompt.prompt();
-        const { outcome } = await deferredPrompt.userChoice;
-        deferredPrompt = null;
-        const installBtn = document.getElementById('install-pwa-btn');
-        if (installBtn) {
-          installBtn.style.display = 'none';
-        }
-      }
-
-      window.addEventListener('appinstalled', (event) => {
-        deferredPrompt = null;
-        const installBtn = document.getElementById('install-pwa-btn');
-        if (installBtn) {
-          installBtn.style.display = 'none';
-        }
-      });
-
       function toggleTokenVisibility(inputId, iconId) {
         const input = document.getElementById(inputId);
         const icon = document.getElementById(iconId);
         if (input && icon) {
-          if (input.type === 'password') {
+          if (input.style.webkitTextSecurity === 'disc' || input.type === 'password') {
+            input.style.webkitTextSecurity = 'none';
             input.type = 'text';
             icon.textContent = 'visibility';
           } else {
-            input.type = 'password';
+            input.style.webkitTextSecurity = 'disc';
             icon.textContent = 'visibility_off';
           }
         }
@@ -3346,12 +3352,6 @@ $isLoggedIn = getUserId() !== null;
       }
 
       document.addEventListener("DOMContentLoaded", () => {
-        // Register PWA Service Worker (InfinityFree Routing)
-        if ('serviceWorker' in navigator) {
-          navigator.serviceWorker.register('?pwa=sw', { scope: './' })
-            .catch(err => console.log('ServiceWorker registration failed:', err));
-        }
-
         // Apply persisted search/think active classes on reload
         document.getElementById('btn-search').classList.toggle('active', isSearchActive);
         document.getElementById('btn-think').classList.toggle('active', isThinkActive);
