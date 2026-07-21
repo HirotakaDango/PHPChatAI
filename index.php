@@ -1578,11 +1578,11 @@ $isLoggedIn = getUserId() !== null;
             <div id="gemini-model-container" style="display: none;">
               <select id="settings-model-gemini">
                 <optgroup label="Google Gemini Models">
-                  <option value="gemini-3.5-flash">Gemini 3.5 Flash (Latest)</option>
+                  <option value="gemini-3.6-flash">Gemini 3.6 Flash (Latest/Flagship)</option>
+                  <option value="gemini-3.5-flash">Gemini 3.5 Flash (Performance Optimized)</option>
+                  <option value="gemini-3.5-flash-lite">Gemini 3.5 Flash-Lite (Cost/Speed Optimized)</option>
                   <option value="gemini-3.1-pro-preview">Gemini 3.1 Pro (Preview)</option>
                   <option value="gemini-3.1-flash-lite">Gemini 3.1 Flash-Lite</option>
-                  <option value="gemini-2.5-pro">Gemini 2.5 Pro</option>
-                  <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
                 </optgroup>
                 <optgroup label="Google Gemma Models (AI Studio)">
                   <option value="gemma-4-31b-it">Gemma 4 31B Instruct</option>
