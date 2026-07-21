@@ -1,4 +1,12 @@
 <?php
+// Set session cookie lifetime to 1 year (31,536,000 seconds)
+session_set_cookie_params([
+  'lifetime' => 31536000,
+  'path' => '/',
+  'secure' => isset($_SERVER['HTTPS']), // Uses secure cookies if HTTPS is enabled
+  'httponly' => true,
+  'samesite' => 'Lax'
+]);
 session_start();
 
 // Outbound Link Redirector
@@ -3219,7 +3227,17 @@ $isLoggedIn = getUserId() !== null;
                 
                 // Dynamic auto-grow sizing on typing and linebreaks
                 editTx.addEventListener('input', adjustEditHeight);
-                editTx.addEventListener('keydown', () => setTimeout(adjustEditHeight, 0));
+                editTx.addEventListener('keydown', (e) => {
+                  const isMobile = window.innerWidth <= 768;
+                  
+                  // On desktop, Enter saves. On mobile or if Shift is held, Enter creates a new line.
+                  if (e.key === 'Enter' && !e.shiftKey && !isMobile) {
+                    e.preventDefault();
+                    document.getElementById(`save-edit-${msg.id}`).click();
+                  } else {
+                    setTimeout(adjustEditHeight, 0);
+                  }
+                });
               };
               controls.appendChild(editBtn);
             } else {
