@@ -893,27 +893,49 @@ $isLoggedIn = getUserId() !== null;
       .markdown-body pre {
         background: #1e1e1e;
         color: #fff;
-        padding: 12px;
+        padding: 16px 12px 12px 12px;
         border-radius: 12px;
         overflow-x: auto;
         margin: 12px 0;
         font-size: 0.9rem;
         position: relative;
         max-width: 100%;
+        white-space: pre;
+        word-wrap: normal;
+      }
+      .markdown-body table {
+        width: 100%;
+        border-collapse: collapse;
+        margin: 16px 0;
+        font-size: 0.95rem;
+        background: var(--md-sys-color-surface-variant);
+        border-radius: 8px;
+        overflow: hidden;
+        border: 1px solid var(--md-sys-color-outline);
+      }
+      .markdown-body th, .markdown-body td {
+        padding: 10px 14px;
+        border: 1px solid var(--md-sys-color-outline);
+        text-align: left;
+        color: var(--md-sys-color-on-surface);
+      }
+      .markdown-body th {
+        background: var(--md-sys-color-primary-container);
+        color: var(--md-sys-color-on-primary-container);
+        font-weight: 500;
       }
       .markdown-body pre code {
-        font-family: monospace;
-      }
-      .markdown-body pre {
-        position: relative;
+        font-family: monospace, monospace;
+        display: block;
+        overflow-x: auto;
       }
       .code-copy-btn {
         position: absolute;
-        top: 6px;
-        right: 6px;
-        background: rgba(255, 255, 255, 0.08);
-        border: 1px solid rgba(255, 255, 255, 0.15);
-        color: #a3a3a3;
+        top: 8px;
+        right: 8px;
+        background: rgba(255, 255, 255, 0.12);
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        color: #d1d5db;
         border-radius: 6px;
         padding: 4px 8px;
         font-size: 0.75rem;
@@ -923,7 +945,7 @@ $isLoggedIn = getUserId() !== null;
         cursor: pointer;
         opacity: 0;
         transition: opacity 0.2s, background 0.2s, color 0.2s;
-        z-index: 10;
+        z-index: 20;
       }
       .markdown-body pre:hover .code-copy-btn {
         opacity: 1;
@@ -1712,6 +1734,23 @@ $isLoggedIn = getUserId() !== null;
         },
         breaks: true
       });
+
+      // Helper to parse math symbols like $10^{32}$ into clean HTML superscripts
+      function cleanMathSymbols(text) {
+        return text
+          .replace(/\$([^\$]+)\$/g, (match, p1) => {
+            let cleaned = p1.replace(/\^\{([^}]+)\}/g, '<sup>$1</sup>').replace(/\^([0-9a-zA-Z]+)/g, '<sup>$1</sup>');
+            return `<span style="font-family: monospace; font-size: 0.95em;">${cleaned}</span>`;
+          });
+      }
+
+      // Convert rough text or pseudo-columns into neat HTML tables
+      function beautifyTables(text) {
+        // Look for markdown tables or structured layout indicators
+        return text.replace(/\|(.+)\|[\r\n]+\|[-:\s|]+\|[\r\n]+((?:\|.*\|[\r\n]*)+)/g, (match) => {
+          return match; // Keep existing standard markdown tables intact
+        });
+      }
 
       const userName = <?= json_encode($_SESSION['name'] ?? 'User') ?>;
       let isLoginMode = true;
@@ -3034,6 +3073,8 @@ $isLoggedIn = getUserId() !== null;
         
         // Render the main AI response below it
         if (mainContent) {
+          mainContent = cleanMathSymbols(mainContent);
+          mainContent = beautifyTables(mainContent);
           html += DOMPurify.sanitize(marked.parse(mainContent));
         }
         
