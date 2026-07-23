@@ -1737,11 +1737,22 @@ $isLoggedIn = getUserId() !== null;
 
       // Helper to parse math symbols like $10^{32}$ into clean HTML superscripts
       function cleanMathSymbols(text) {
-        return text
-          .replace(/\$([^\$]+)\$/g, (match, p1) => {
-            let cleaned = p1.replace(/\^\{([^}]+)\}/g, '<sup>$1</sup>').replace(/\^([0-9a-zA-Z]+)/g, '<sup>$1</sup>');
-            return `<span style="font-family: monospace; font-size: 0.95em;">${cleaned}</span>`;
-          });
+        // First, handle raw unparsed LaTeX temperature/symbol artifacts outside or inside math blocks
+        text = text
+          .replace(/\^\{\s*\\circ\s*\}\s*\\text\{\s*([CFR])\s*\}/gi, '°$1')
+          .replace(/\^\\circ\s*\\text\{\s*([CFR])\s*\}/gi, '°$1')
+          .replace(/\^\{\s*\\circ\s*\}/g, '°')
+          .replace(/\^\\circ/g, '°');
+
+        // Then parse standard math blocks ($...$)
+        return text.replace(/\$([^\$]+)\$/g, (match, p1) => {
+          let cleaned = p1
+            .replace(/\\circ\s*\\text\{([CFR])\}/gi, '°$1')
+            .replace(/\\text\{([^}]+)\}/g, '$1')
+            .replace(/\^\{([^}]+)\}/g, '<sup>$1</sup>')
+            .replace(/\^([0-9a-zA-Z]+)/g, '<sup>$1</sup>');
+          return `<span style="font-family: monospace; font-size: 0.95em;">${cleaned}</span>`;
+        });
       }
 
       // Convert rough text or pseudo-columns into neat HTML tables
