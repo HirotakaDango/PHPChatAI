@@ -1,15 +1,13 @@
 <?php
-// Set session cookie lifetime to 1 year (31,536,000 seconds)
 session_set_cookie_params([
   'lifetime' => 31536000,
   'path' => '/',
-  'secure' => isset($_SERVER['HTTPS']), // Uses secure cookies if HTTPS is enabled
+  'secure' => isset($_SERVER['HTTPS']),
   'httponly' => true,
   'samesite' => 'Lax'
 ]);
 session_start();
 
-// Outbound Link Redirector
 if (isset($_GET['redirect'])) {
   header('Location: ' . $_GET['redirect']);
   exit;
@@ -28,17 +26,14 @@ try {
   die("Database connection failed.");
 }
 
-// Ensure tables exist
 $db->exec("CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, password TEXT)");
 $db->exec("CREATE TABLE IF NOT EXISTS chats (id TEXT PRIMARY KEY, user_id INTEGER, title TEXT, pinned INTEGER DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)");
 $db->exec("CREATE TABLE IF NOT EXISTS messages (id TEXT PRIMARY KEY, chat_id TEXT, parent_id TEXT, role TEXT, content TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)");
 $db->exec("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)");
 
-// Create Indexes to make chat loading lightning fast
 $db->exec("CREATE INDEX IF NOT EXISTS idx_messages_chat_id ON messages(chat_id)");
 $db->exec("CREATE INDEX IF NOT EXISTS idx_chats_user_id ON chats(user_id)");
 
-// Smart migrations for missing columns in users table
 $userCols = [];
 $stmt = $db->query("PRAGMA table_info(users)");
 while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) { 
@@ -51,17 +46,13 @@ try {
   if (!in_array('username', $userCols)) $db->exec("ALTER TABLE users ADD COLUMN username TEXT");
 } catch (Exception $e) {
   if (strpos($e->getMessage(), 'readonly database') !== false) {
-    // Attempt to automatically repair permissions on the folder and SQLite file
     @chmod(__DIR__, 0755);
     @chmod($dbFile, 0644);
-    
-    // Retry database changes after the auto-fix attempt
     try {
       if (!in_array('name', $userCols)) $db->exec("ALTER TABLE users ADD COLUMN name TEXT");
       if (!in_array('email', $userCols)) $db->exec("ALTER TABLE users ADD COLUMN email TEXT");
       if (!in_array('username', $userCols)) $db->exec("ALTER TABLE users ADD COLUMN username TEXT");
     } catch (Exception $retryException) {
-      // If auto-fix fails, show specific instructions for the device workspace
       die("<div style='font-family:sans-serif; padding:40px; text-align:center; background:#121212; color:#e3e3e3; height:100vh; box-sizing:border-box;'>
         <h2 style='color:#ff5252;'>Database Permission Denied</h2>
         <p>The PHP process does not have permission to write to the database folder or file on device.</p>
@@ -86,6 +77,7 @@ try {
 function getUserId() {
   return $_SESSION['user_id'] ?? null;
 }
+
 function jsonResponse($data) {
   header('Content-Type: application/json; charset=utf-8');
   header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
@@ -189,7 +181,6 @@ if (isset($_GET['api'])) {
 
   if ($api === 'delete_chat') {
     $req = json_decode(file_get_contents('php://input'), true);
-    // Strict ownership verification to prevent cross-account API abuse
     $chk = $db->prepare("SELECT id FROM chats WHERE id = ? AND user_id = ?");
     $chk->execute([$req['id'], $userId]);
     if ($chk->fetch()) {
@@ -202,7 +193,6 @@ if (isset($_GET['api'])) {
 
   if ($api === 'rename_chat') {
     $req = json_decode(file_get_contents('php://input'), true);
-    // Security: Strip HTML tags and strictly enforce character limit on the database side
     $safeTitle = mb_substr(strip_tags($req['title'] ?? 'New Chat'), 0, 100);
     $db->prepare("UPDATE chats SET title = ? WHERE id = ? AND user_id = ?")->execute([$safeTitle, $req['id'], $userId]);
     jsonResponse(['status' => 'success']);
@@ -221,7 +211,6 @@ if (isset($_GET['api'])) {
     $stmt->execute([$chatId, $userId]);
     if (!$stmt->fetch()) jsonResponse(['error' => 'Unauthorized']);
     
-    // Fetch all messages for the chat sorted by rowid (preserves exact insertion order)
     $stmt = $db->prepare("SELECT * FROM messages WHERE chat_id = ? ORDER BY rowid ASC");
     $stmt->execute([$chatId]);
     jsonResponse($stmt->fetchAll(PDO::FETCH_ASSOC));
@@ -236,7 +225,6 @@ if (isset($_GET['api'])) {
     $stmt = $db->prepare("INSERT INTO messages (id, chat_id, parent_id, role, content) VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET content = excluded.content");
     $stmt->execute([$req['id'], $req['chat_id'], $req['parent_id'], $req['role'], $req['content']]);
     
-    // Bump the chat timestamp so it moves to the top of the sidebar dynamically
     $db->prepare("UPDATE chats SET created_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?")->execute([$req['chat_id'], $userId]);
     
     jsonResponse(['status' => 'success']);
@@ -311,7 +299,6 @@ if (isset($_GET['api'])) {
     $urls = [];
     $snippets = [];
 
-    // Attempt 1: SearXNG Public Rotator (Fast, No RSS, Clean URLs)
     $searxInstances = [
       'https://searx.be', 'https://paulgo.io', 'https://search.mdosch.de',
       'https://searx.tiekoetter.com', 'https://search.inetol.net'
@@ -322,20 +309,20 @@ if (isset($_GET['api'])) {
       'http' => [
         'method'  => 'GET',
         'header'  => "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)\r\nAccept: application/json\r\n",
-        'timeout' => 1.2 // Reduced timeout to prevent thread blocks on slow servers
+        'timeout' => 1.2
       ]
     ];
 
     $searxAttempts = 0;
     foreach ($searxInstances as $instance) {
-      if ($searxAttempts >= 2) break; // Cap at 2 attempts to maintain fast overall response cycles
+      if ($searxAttempts >= 2) break;
       $searxAttempts++;
       $searxJson = @file_get_contents($instance . '/search?q=' . urlencode($query) . '&format=json', false, stream_context_create($searxOpts));
       if ($searxJson) {
         $searxData = json_decode($searxJson, true);
         if (!empty($searxData['results'])) {
           foreach ($searxData['results'] as $result) {
-            if (count($urls) >= 15) break; // Top 15 results
+            if (count($urls) >= 15) break;
             $url = $result['url'] ?? '';
             $title = $result['title'] ?? '';
             $content = $result['content'] ?? '';
@@ -344,12 +331,11 @@ if (isset($_GET['api'])) {
               $urls[] = $url;
             }
           }
-          break; // Stop loop once we get successful results
+          break;
         }
       }
     }
 
-    // Attempt 2: DuckDuckGo Lite POST (Fast fallback if SearXNG fails)
     if (count($urls) < 5) {
       $ddgOpts = [
         'http' => [
@@ -411,7 +397,6 @@ if (isset($_GET['api'])) {
     if (!empty($formattedMessages)) {
       $lastIdx = count($formattedMessages) - 1;
       
-      // Think Feature (Force or Prevent reasoning prompt)
       if (!empty($req['think'])) {
         $appendStr = "\n\n[SYSTEM INSTRUCTION: You MUST think step-by-step. First, write an extensive, highly analytical, and deeply detailed internal reasoning process inside `<think>...</think>` tags. You are strictly forbidden from leaving the `<think>` block empty or bypassing it. Perform your calculations, draft your structure, and outline your logical steps inside the `<think>` block. Only after completing a comprehensive reasoning process should you close it with `</think>` and proceed to write your final response. The final response must be extremely detailed and at least 1,500 words long.]";
       } else {
@@ -447,7 +432,7 @@ if (isset($_GET['api'])) {
         'messages' => $formattedMessages,
         'max_tokens' => 8192,
         'temperature' => 0.7,
-        'stream' => true // Enable API Streaming
+        'stream' => true
       ];
       $options = [
         'http' => [
@@ -470,7 +455,6 @@ if (isset($_GET['api'])) {
       jsonResponse(['error' => 'DNS_ERROR: ' . ($error['message'] ?? 'Unable to resolve host.')]);
     }
     
-    // Check for HTTP errors before streaming
     $meta = stream_get_meta_data($fp);
     if (isset($meta['wrapper_data'])) {
       $statusLine = $meta['wrapper_data'][0] ?? '';
@@ -496,13 +480,12 @@ if (isset($_GET['api'])) {
     header('Content-Type: text/event-stream');
     header('Cache-Control: no-cache');
     header('Connection: keep-alive');
-    header('X-Accel-Buffering: no'); // Tells Nginx/device web server proxies not to buffer streaming tokens
+    header('X-Accel-Buffering: no');
     @ini_set('output_buffering', 'off');
     @ini_set('zlib.output_compression', false);
-    while (ob_get_level()) ob_end_flush(); // Clear all server buffers immediately
+    while (ob_get_level()) ob_end_flush();
     ob_implicit_flush(true);
     
-    // Stream chunks back to client
     while (!feof($fp)) {
       $chunk = fgets($fp);
       if ($chunk !== false) {
@@ -524,14 +507,11 @@ $isLoggedIn = getUserId() !== null;
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
     <title>PHPChatAI</title>
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%234d6bfe'%3E%3Cpath d='m10.75 11.5l7.075-7.075q.3-.3.7-.3t.7.3t.3.7t-.3.7l-7.05 7.075zm2.475 2.475l6.35-6.375q.3-.3.713-.3t.712.3t.3.713t-.3.712l-6.35 6.35zm-7.95 4.75Q3 16.45 3 13.25t2.275-5.475l3-3L9.75 6.25q.175.175.3.363T10.3 7L14 3.275q.3-.3.713-.3t.712.3t.3.712t-.3.713L11.1 9.025l-2.125 2.1l.475.475q1.15 1.15 1.1 2.75t-1.225 2.775l-1.425-1.4q.575-.575.638-1.362T8.025 13L6.85 11.85q-.3-.3-.3-.712t.3-.713l1.425-1.4q.3-.3.3-.713t-.3-.712l-1.6 1.6q-1.7 1.7-1.7 4.063t1.7 4.062t4.075 1.7t4.075-1.7l5.975-6q.3-.3.713-.3t.712.3t.3.713t-.3.712l-6 5.975Q13.95 21 10.75 21t-5.475-2.275M17 23.025V21q1.65 0 2.825-1.175T21 17h2.025q0 2.5-1.763 4.263T17 23.025M.975 7q0-2.5 1.763-4.262T7 .974V3Q5.35 3 4.175 4.175T3 7z'/%3E%3C/svg%3E">
-    
-    <!-- Open Graph / Facebook -->
     <meta property="og:type" content="website">
     <meta property="og:title" content="PHPChatAI">
     <meta property="og:description" content="A private, modern AI chat assistant powered by HuggingFace.">
     <meta property="og:image" content="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='1200' height='630'><rect width='100%25' height='100%25' fill='%23131415'/><g transform='translate(480,100) scale(10)' fill='%234d6bfe'><path d='m10.75 11.5l7.075-7.075q.3-.3.7-.3t.7.3t.3.7t-.3.7l-7.05 7.075zm2.475 2.475l6.35-6.375q.3-.3.713-.3t.712.3t.3.713t-.3.712l-6.35 6.35zm-7.95 4.75Q3 16.45 3 13.25t2.275-5.475l3-3L9.75 6.25q.175.175.3.363T10.3 7L14 3.275q.3-.3.713-.3t.712.3t.3.712t-.3.713L11.1 9.025l-2.125 2.1l.475.475q1.15 1.15 1.1 2.75t-1.225 2.775l-1.425-1.4q.575-.575.638-1.362T8.025 13L6.85 11.85q-.3-.3-.3-.712t.3-.713l1.425-1.4q.3-.3.3-.713t-.3-.712l-1.6 1.6q-1.7 1.7-1.7 4.063t1.7 4.062t4.075 1.7t4.075-1.7l5.975-6q.3-.3.713-.3t.712.3t.3.713t-.3.712l-6 5.975Q13.95 21 10.75 21t-5.475-2.275M17 23.025V21q1.65 0 2.825-1.175T21 17h2.025q0 2.5-1.763 4.263T17 23.025M.975 7q0-2.5 1.763-4.262T7 .974V3Q5.35 3 4.175 4.175T3 7z'/></g><text x='50%25' y='85%25' font-family='sans-serif' font-size='50' fill='%234d6bfe' font-weight='bold' text-anchor='middle'>PHPChatAI</text></svg>">
     <meta property="og:site_name" content="PHPChatAI">
-
     <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&display=swap" rel="stylesheet">
     <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined" rel="stylesheet" />
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
@@ -569,8 +549,6 @@ $isLoggedIn = getUserId() !== null;
         box-sizing: border-box;
         margin: 0;
         padding: 0;
-      }
-      * {
         scrollbar-width: thin;
         scrollbar-color: rgba(128, 128, 128, 0.3) transparent;
       }
@@ -595,7 +573,7 @@ $isLoggedIn = getUserId() !== null;
         height: 100dvh;
         display: flex;
         overflow: hidden;
-        transition: background 0.3s, color 0.3s;
+        transition: background 0.3s ease, color 0.3s ease;
       }
       button {
         font-family: inherit;
@@ -603,6 +581,7 @@ $isLoggedIn = getUserId() !== null;
         border: none;
         background: transparent;
         color: inherit;
+        transition: all 0.3s ease;
       }
       #auth-screen {
         display: <?= $isLoggedIn ? 'none' : 'flex' ?>;
@@ -623,6 +602,7 @@ $isLoggedIn = getUserId() !== null;
         width: 90%;
         max-width: 400px;
         text-align: center;
+        box-shadow: 0 8px 32px rgba(0,0,0,0.1);
       }
       .auth-box h1 {
         margin-bottom: 24px;
@@ -639,6 +619,10 @@ $isLoggedIn = getUserId() !== null;
         color: var(--md-sys-color-on-background);
         font-size: 1rem;
         outline: none;
+        transition: border-color 0.3s ease;
+      }
+      .auth-box input:focus {
+        border-color: var(--md-sys-color-primary);
       }
       .auth-box button {
         width: 100%;
@@ -648,11 +632,11 @@ $isLoggedIn = getUserId() !== null;
         color: var(--md-sys-color-on-primary);
         font-size: 1rem;
         font-weight: 500;
-        transition: box-shadow 0.2s;
         margin-bottom: 12px;
       }
       .auth-box button:hover {
-        box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+        box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+        opacity: 0.95;
       }
       .auth-switch {
         color: var(--md-sys-color-primary);
@@ -670,7 +654,7 @@ $isLoggedIn = getUserId() !== null;
         background: var(--md-sys-color-surface-variant);
         display: flex;
         flex-direction: column;
-        transition: transform 0.3s;
+        transition: transform 0.3s ease;
         z-index: 50;
         border-right: 1px solid var(--md-sys-color-outline);
       }
@@ -689,12 +673,12 @@ $isLoggedIn = getUserId() !== null;
         background: var(--md-sys-color-primary);
         color: var(--md-sys-color-on-primary);
         font-weight: 500;
-        transition: background 0.2s, opacity 0.2s;
         justify-content: center;
         font-size: 0.95rem;
       }
       .new-chat-btn:hover {
         opacity: 0.9;
+        box-shadow: 0 2px 6px rgba(0,0,0,0.15);
       }
       .search-box {
         display: flex;
@@ -703,6 +687,10 @@ $isLoggedIn = getUserId() !== null;
         padding: 8px 16px;
         border-radius: 28px;
         border: 1px solid var(--md-sys-color-outline);
+        transition: border-color 0.3s ease;
+      }
+      .search-box:focus-within {
+        border-color: var(--md-sys-color-primary);
       }
       .search-box input {
         border: none;
@@ -728,8 +716,8 @@ $isLoggedIn = getUserId() !== null;
         border-radius: 8px;
         font-size: 0.9rem;
         color: var(--md-sys-color-on-surface-variant);
-        transition: background 0.2s;
         margin-bottom: 2px;
+        transition: all 0.2s ease;
       }
       .chat-item:hover {
         background: rgba(0, 0, 0, 0.05);
@@ -772,7 +760,6 @@ $isLoggedIn = getUserId() !== null;
         gap: 12px;
         padding: 12px 16px;
         border-radius: 28px;
-        transition: background 0.2s;
         font-size: 0.9rem;
         width: 100%;
         text-align: left;
@@ -844,12 +831,12 @@ $isLoggedIn = getUserId() !== null;
         max-width: 800px;
         display: flex;
         margin-bottom: 24px;
-        animation: fadeIn 0.3s ease;
+        animation: fadeIn 0.4s cubic-bezier(0.2, 0, 0, 1);
         min-width: 0;
         flex-shrink: 0;
       }
       @keyframes fadeIn {
-        from { opacity: 0; transform: translateY(5px); }
+        from { opacity: 0; transform: translateY(8px); }
         to { opacity: 1; transform: translateY(0); }
       }
       .message-row.user {
@@ -876,6 +863,7 @@ $isLoggedIn = getUserId() !== null;
         line-height: 1.5;
         white-space: pre-wrap;
         word-wrap: break-word;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.05);
       }
       .assistant .message-bubble {
         background: transparent;
@@ -942,9 +930,7 @@ $isLoggedIn = getUserId() !== null;
         display: flex;
         align-items: center;
         gap: 4px;
-        cursor: pointer;
         opacity: 0;
-        transition: opacity 0.2s, background 0.2s, color 0.2s;
         z-index: 20;
       }
       .markdown-body pre:hover .code-copy-btn {
@@ -1040,7 +1026,12 @@ $isLoggedIn = getUserId() !== null;
         flex-direction: column;
         padding: 12px 12px 12px 16px;
         border: 1px solid var(--md-sys-color-outline);
-        box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+        box-shadow: 0 4px 15px rgba(0,0,0,0.08);
+        transition: box-shadow 0.3s ease, border-color 0.3s ease;
+      }
+      .input-box:focus-within {
+        box-shadow: 0 6px 24px rgba(0,0,0,0.12);
+        border-color: var(--md-sys-color-primary);
       }
       .input-box textarea {
         width: 100%;
@@ -1078,8 +1069,6 @@ $isLoggedIn = getUserId() !== null;
         background: transparent;
         color: var(--md-sys-color-on-surface-variant);
         font-size: 0.85rem;
-        cursor: pointer;
-        transition: 0.2s;
       }
       .toggle-btn:hover {
         background: rgba(0, 0, 0, 0.05);
@@ -1126,7 +1115,6 @@ $isLoggedIn = getUserId() !== null;
         border: 1px solid var(--md-sys-color-outline);
         background: transparent;
         color: var(--md-sys-color-on-surface-variant);
-        transition: background 0.2s, color 0.2s, border-color 0.2s;
       }
       .theme-select-btn:hover {
         background: rgba(128, 128, 128, 0.05);
@@ -1151,6 +1139,10 @@ $isLoggedIn = getUserId() !== null;
         display: flex;
         align-items: center;
         color: var(--md-sys-color-on-surface);
+        transition: color 0.2s ease;
+      }
+      .think-box summary:hover {
+        color: var(--md-sys-color-primary);
       }
       .think-box .think-content {
         padding: 0 16px 16px 16px;
@@ -1170,11 +1162,14 @@ $isLoggedIn = getUserId() !== null;
         align-items: center;
         justify-content: center;
         margin-bottom: 4px;
-        transition: transform 0.1s;
       }
       .send-btn:disabled {
         opacity: 0.3;
         cursor: not-allowed;
+      }
+      .send-btn:not(:disabled):hover {
+        box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+        opacity: 0.95;
       }
       .send-btn:not(:disabled):active {
         transform: scale(0.95);
@@ -1195,7 +1190,6 @@ $isLoggedIn = getUserId() !== null;
         cursor: pointer;
         box-shadow: 0 4px 10px rgba(0,0,0,0.3);
         z-index: 99;
-        transition: opacity 0.2s, transform 0.2s;
         opacity: 0;
         pointer-events: none;
       }
@@ -1246,6 +1240,7 @@ $isLoggedIn = getUserId() !== null;
         position: absolute;
         inset: 0;
         background: rgba(0,0,0,0.5);
+        backdrop-filter: blur(2px);
         z-index: 40;
       }
       #overlay.show {
@@ -1255,7 +1250,8 @@ $isLoggedIn = getUserId() !== null;
         display: none;
         position: fixed;
         inset: 0;
-        background: rgba(0,0,0,0.5);
+        background: rgba(0,0,0,0.6);
+        backdrop-filter: blur(4px);
         z-index: 2000;
         align-items: center;
         justify-content: center;
@@ -1274,6 +1270,7 @@ $isLoggedIn = getUserId() !== null;
         overflow-y: auto;
         border: 1px solid var(--md-sys-color-outline);
         box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+        animation: fadeIn 0.3s ease;
       }
       .modal-content h2 {
         margin-bottom: 16px;
@@ -1290,16 +1287,19 @@ $isLoggedIn = getUserId() !== null;
         outline: none;
         font-family: inherit;
         font-size: 0.95rem;
+        transition: border-color 0.3s ease;
+      }
+      .modal-content input:focus, .modal-content select:focus {
+        border-color: var(--md-sys-color-primary);
       }
       .modal-content select {
         appearance: none;
         -webkit-appearance: none;
-        -moz-appearance: none;
         background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%238e918f' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><polyline points='6 9 12 15 18 9'></polyline></svg>");
         background-repeat: no-repeat;
-        background-position: right 16px center; /* Positions the arrow 24px away from the right edge */
+        background-position: right 16px center;
         background-size: 16px;
-        padding-right: 48px; /* Adds extra padding to prevent text from overlapping the arrow */
+        padding-right: 48px;
       }
       .modal-content .btn-group {
         display: flex;
@@ -1313,11 +1313,17 @@ $isLoggedIn = getUserId() !== null;
         padding: 10px 24px;
         border-radius: 100px;
       }
+      .btn-primary:hover {
+        opacity: 0.9;
+      }
       .btn-secondary {
         background: var(--md-sys-color-surface-variant);
         color: var(--md-sys-color-on-surface-variant);
         padding: 10px 24px;
         border-radius: 100px;
+      }
+      .btn-secondary:hover {
+        background: rgba(0,0,0,0.1);
       }
       .settings-section {
         border-top: 1px solid var(--md-sys-color-outline);
@@ -1374,7 +1380,6 @@ $isLoggedIn = getUserId() !== null;
         border-radius: 12px;
         margin: 8px 8px 8px 0;
         cursor: pointer;
-        transition: background 0.2s, border-color 0.2s;
         max-width: 300px;
         vertical-align: top;
       }
@@ -1486,12 +1491,11 @@ $isLoggedIn = getUserId() !== null;
       </main>
     </div>
 
-    <!-- Sources Modal -->
     <div id="sources-modal" class="modal">
       <div class="modal-content" style="max-width: 600px;">
         <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 16px;">
           <h2 style="margin: 0; font-size: 1.1rem; font-weight: 500; color: var(--md-sys-color-on-surface);">Sources & References</h2>
-          <button onclick="closeSourcesModal()" style="padding: 6px; border-radius: 50%; background: var(--md-sys-color-surface-variant); display: flex; align-items: center; justify-content: center; cursor: pointer; border: 1px solid var(--md-sys-color-outline);">
+          <button onclick="closeSourcesModal()" style="padding: 6px; border-radius: 50%; background: var(--md-sys-color-surface-variant); display: flex; align-items: center; justify-content: center; border: 1px solid var(--md-sys-color-outline);">
             <span class="material-symbols-outlined" style="font-size: 20px;">close</span>
           </button>
         </div>
@@ -1499,12 +1503,11 @@ $isLoggedIn = getUserId() !== null;
       </div>
     </div>
 
-    <!-- File Preview Modal -->
     <div id="file-modal" class="modal">
       <div class="modal-content" style="max-width: 800px;">
         <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 16px;">
           <h2 id="file-modal-title" style="margin: 0; font-size: 1.1rem; font-weight: 500; word-break: break-all; color: var(--md-sys-color-on-surface);">File Name</h2>
-          <button onclick="closeFileModal()" style="padding: 6px; border-radius: 50%; background: var(--md-sys-color-surface-variant); display: flex; align-items: center; justify-content: center; cursor: pointer; border: 1px solid var(--md-sys-color-outline);">
+          <button onclick="closeFileModal()" style="padding: 6px; border-radius: 50%; background: var(--md-sys-color-surface-variant); display: flex; align-items: center; justify-content: center; border: 1px solid var(--md-sys-color-outline);">
             <span class="material-symbols-outlined" style="font-size: 20px;">close</span>
           </button>
         </div>
@@ -1517,7 +1520,6 @@ $isLoggedIn = getUserId() !== null;
       </div>
     </div>
 
-    <!-- Settings Modal -->
     <div id="settings-modal" class="modal">
       <div class="modal-content" style="max-width: 550px;">
         <style>
@@ -1566,7 +1568,6 @@ $isLoggedIn = getUserId() !== null;
           <div class="settings-tab" onclick="switchSettingsTab('tab-backup')">Backup</div>
         </div>
 
-        <!-- AI Model Tab -->
         <div id="tab-ai" class="settings-tab-content active">
           <div class="settings-section" style="border: none; padding-top: 0; margin-top: 0;">
             <h3>API Provider</h3>
@@ -1618,7 +1619,6 @@ $isLoggedIn = getUserId() !== null;
           </div>
         </div>
 
-        <!-- Appearance Tab -->
         <div id="tab-appearance" class="settings-tab-content">
           <div class="settings-section" style="border: none; padding-top: 0; margin-top: 0;">
             <h3>Appearance</h3>
@@ -1636,7 +1636,6 @@ $isLoggedIn = getUserId() !== null;
           </div>
         </div>
 
-        <!-- Account Tab -->
         <div id="tab-account" class="settings-tab-content">
           <div class="settings-section" style="border: none; padding-top: 0; margin-top: 0;">
             <h3>Account Settings</h3>
@@ -1651,7 +1650,6 @@ $isLoggedIn = getUserId() !== null;
           </div>
         </div>
 
-        <!-- Admin Tab -->
         <?php if ($isAdmin): ?>
           <div id="tab-admin" class="settings-tab-content">
             <div class="settings-section" style="border: none; padding-top: 0; margin-top: 0;">
@@ -1659,10 +1657,10 @@ $isLoggedIn = getUserId() !== null;
               <div style="position: relative; display: flex; align-items: center; margin-bottom: 12px;">
                 <input type="text" id="hf-token-input" placeholder="HuggingFace API Token" autocomplete="off" spellcheck="false" data-lpignore="true" style="-webkit-text-security: disc; margin-bottom: 0; padding-right: 80px;">
                 <div style="position: absolute; right: 16px; display: flex; gap: 12px; align-items: center; z-index: 10;">
-                  <button type="button" onclick="toggleTokenVisibility('hf-token-input', 'hf-token-visibility-icon')" style="display: flex; align-items: center; justify-content: center; color: var(--md-sys-color-on-surface-variant); cursor: pointer;" title="Toggle Visibility">
+                  <button type="button" onclick="toggleTokenVisibility('hf-token-input', 'hf-token-visibility-icon')" style="display: flex; align-items: center; justify-content: center; color: var(--md-sys-color-on-surface-variant);" title="Toggle Visibility">
                     <span class="material-symbols-outlined" id="hf-token-visibility-icon" style="font-size: 20px;">visibility_off</span>
                   </button>
-                  <button type="button" onclick="copyAdminToken('hf-token-input', 'hf-token-copy-icon')" style="display: flex; align-items: center; justify-content: center; color: var(--md-sys-color-on-surface-variant); cursor: pointer;" title="Copy Token">
+                  <button type="button" onclick="copyAdminToken('hf-token-input', 'hf-token-copy-icon')" style="display: flex; align-items: center; justify-content: center; color: var(--md-sys-color-on-surface-variant);" title="Copy Token">
                     <span class="material-symbols-outlined" id="hf-token-copy-icon" style="font-size: 20px;">content_copy</span>
                   </button>
                 </div>
@@ -1670,10 +1668,10 @@ $isLoggedIn = getUserId() !== null;
               <div style="position: relative; display: flex; align-items: center;">
                 <input type="text" id="gemini-token-input" placeholder="Gemini API Token (AI Studio)" autocomplete="off" spellcheck="false" data-lpignore="true" style="-webkit-text-security: disc; margin-bottom: 0; padding-right: 80px;">
                 <div style="position: absolute; right: 16px; display: flex; gap: 12px; align-items: center; z-index: 10;">
-                  <button type="button" onclick="toggleTokenVisibility('gemini-token-input', 'gemini-token-visibility-icon')" style="display: flex; align-items: center; justify-content: center; color: var(--md-sys-color-on-surface-variant); cursor: pointer;" title="Toggle Visibility">
+                  <button type="button" onclick="toggleTokenVisibility('gemini-token-input', 'gemini-token-visibility-icon')" style="display: flex; align-items: center; justify-content: center; color: var(--md-sys-color-on-surface-variant);" title="Toggle Visibility">
                     <span class="material-symbols-outlined" id="gemini-token-visibility-icon" style="font-size: 20px;">visibility_off</span>
                   </button>
-                  <button type="button" onclick="copyAdminToken('gemini-token-input', 'gemini-token-copy-icon')" style="display: flex; align-items: center; justify-content: center; color: var(--md-sys-color-on-surface-variant); cursor: pointer;" title="Copy Token">
+                  <button type="button" onclick="copyAdminToken('gemini-token-input', 'gemini-token-copy-icon')" style="display: flex; align-items: center; justify-content: center; color: var(--md-sys-color-on-surface-variant);" title="Copy Token">
                     <span class="material-symbols-outlined" id="gemini-token-copy-icon" style="font-size: 20px;">content_copy</span>
                   </button>
                 </div>
@@ -1682,7 +1680,6 @@ $isLoggedIn = getUserId() !== null;
           </div>
         <?php endif; ?>
 
-        <!-- Backup Tab -->
         <div id="tab-backup" class="settings-tab-content">
           <div class="settings-section" style="border: none; padding-top: 0; margin-top: 0;">
             <h3>Backup</h3>
@@ -1701,7 +1698,6 @@ $isLoggedIn = getUserId() !== null;
       </div>
     </div>
 
-    <!-- Password Modal -->
     <div id="password-modal" class="modal">
       <div class="modal-content" style="max-width: 400px;">
         <h2 style="margin-top: 0;">Update Password</h2>
@@ -1714,7 +1710,6 @@ $isLoggedIn = getUserId() !== null;
       </div>
     </div>
 
-    <!-- Username Modal -->
     <div id="username-modal" class="modal">
       <div class="modal-content" style="max-width: 400px;">
         <h2 style="margin-top: 0;">Change Username</h2>
@@ -1735,16 +1730,13 @@ $isLoggedIn = getUserId() !== null;
         breaks: true
       });
 
-      // Helper to parse math symbols like $10^{32}$ into clean HTML superscripts
       function cleanMathSymbols(text) {
-        // First, handle raw unparsed LaTeX temperature/symbol artifacts outside or inside math blocks
         text = text
           .replace(/\^\{\s*\\circ\s*\}\s*\\text\{\s*([CFR])\s*\}/gi, '°$1')
           .replace(/\^\\circ\s*\\text\{\s*([CFR])\s*\}/gi, '°$1')
           .replace(/\^\{\s*\\circ\s*\}/g, '°')
           .replace(/\^\\circ/g, '°');
 
-        // Then parse standard math blocks ($...$)
         return text.replace(/\$([^\$]+)\$/g, (match, p1) => {
           let cleaned = p1
             .replace(/\\circ\s*\\text\{([CFR])\}/gi, '°$1')
@@ -1755,11 +1747,9 @@ $isLoggedIn = getUserId() !== null;
         });
       }
 
-      // Convert rough text or pseudo-columns into neat HTML tables
       function beautifyTables(text) {
-        // Look for markdown tables or structured layout indicators
         return text.replace(/\|(.+)\|[\r\n]+\|[-:\s|]+\|[\r\n]+((?:\|.*\|[\r\n]*)+)/g, (match) => {
-          return match; // Keep existing standard markdown tables intact
+          return match;
         });
       }
 
@@ -1819,14 +1809,12 @@ $isLoggedIn = getUserId() !== null;
         }
       }
 
-      // Handle OS theme changes dynamically when "System" is active
       window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
         if ((localStorage.getItem('theme_mode') || 'system') === 'system') {
           applyTheme();
         }
       });
 
-      // Run immediately on page load to prevent a white flash
       applyTheme();
 
       function toggleSearch() {
@@ -1882,7 +1870,6 @@ $isLoggedIn = getUserId() !== null;
           try {
             data = JSON.parse(rawText);
           } catch (err) {
-            console.error("Server Error Response:", rawText);
             return alert("Server error occurred. Please check the browser console.");
           }
           
@@ -1934,14 +1921,12 @@ $isLoggedIn = getUserId() !== null;
                 resultsGroup.appendChild(opt);
               });
               resultsGroup.style.display = 'block';
-              document.getElementById('settings-model-hf').value = data[0].modelId; // Auto-select top result
+              document.getElementById('settings-model-hf').value = data[0].modelId;
             } else {
               resultsGroup.style.display = 'none';
             }
-          } catch (e) {
-            console.error('HF Search error', e);
-          }
-        }, 500); // Debounce to prevent API spam
+          } catch (e) {}
+        }, 500);
       }
 
       function switchSettingsTab(tabId) {
@@ -1958,7 +1943,11 @@ $isLoggedIn = getUserId() !== null;
       }
 
       function openSettings() {
-        // Reset tabs to default active view
+        if (window.innerWidth <= 768) {
+          document.getElementById('sidebar').classList.remove('open');
+          document.getElementById('overlay').classList.remove('show');
+        }
+        
         const firstTab = document.querySelector('.settings-tab');
         if (firstTab) {
           document.querySelectorAll('.settings-tab').forEach(t => t.classList.remove('active'));
@@ -1990,8 +1979,8 @@ $isLoggedIn = getUserId() !== null;
           selectGemini.appendChild(customOpt);
         }
         selectGemini.value = savedModelGemini;
-        document.getElementById('settings-modal').classList.add('show'); // Open immediately
-        applyTheme(); // Refresh theme button active highlights
+        document.getElementById('settings-modal').classList.add('show');
+        applyTheme();
         
         const adminCheck = <?= $isAdmin ? 'true' : 'false' ?>;
         if (adminCheck) {
@@ -2037,7 +2026,6 @@ $isLoggedIn = getUserId() !== null;
           finalContent = decodeURIComponent(escape(window.atob(content)));
         }
         
-        // Prevent UI freezing by strictly limiting text length rendered in the modal preview
         let previewContent = finalContent;
         if (previewContent.length > 3000) {
           previewContent = previewContent.substring(0, 3000) + '\n\n... [File truncated for UI preview. Download to view the full file.]';
@@ -2111,7 +2099,6 @@ $isLoggedIn = getUserId() !== null;
         document.getElementById('sources-modal').classList.remove('show');
       }
 
-      // Close modals when clicking/touching outside the container
       const handleModalOutClick = (e) => {
         const settingsModal = document.getElementById('settings-modal');
         const fileModal = document.getElementById('file-modal');
@@ -2245,7 +2232,6 @@ $isLoggedIn = getUserId() !== null;
         const list = document.getElementById('chat-list');
         list.innerHTML = '';
         
-        // Sort: Pinned first, then current active chat, then the rest
         let sortedChats = [...chats].sort((a, b) => {
           if (a.pinned != b.pinned) return b.pinned - a.pinned;
           if (a.id === currentChatId) return -1;
@@ -2255,7 +2241,6 @@ $isLoggedIn = getUserId() !== null;
 
         const filtered = sortedChats.filter(c => c.title.toLowerCase().includes(searchQuery));
         filtered.forEach(c => {
-          // XSS Prevention: Sanitize title to prevent HTML/JS injection in the sidebar
           const safeTitle = c.title
             .replace(/&/g, "&amp;")
             .replace(/</g, "&lt;")
@@ -2283,7 +2268,6 @@ $isLoggedIn = getUserId() !== null;
           list.appendChild(div);
         });
         
-        // Append Load More Button if necessary
         if (hasMoreChats && searchQuery === '') {
           const loadMoreBtn = document.createElement('button');
           loadMoreBtn.className = 'chat-item';
@@ -2297,6 +2281,11 @@ $isLoggedIn = getUserId() !== null;
       }
 
       async function startNewChat(push = true) {
+        if (window.innerWidth <= 768) {
+          document.getElementById('sidebar').classList.remove('open');
+          document.getElementById('overlay').classList.remove('show');
+        }
+
         currentChatId = null;
         if (push) updateURL(null);
         document.title = "PHPChatAI";
@@ -2305,13 +2294,14 @@ $isLoggedIn = getUserId() !== null;
         activeLeafId = null;
         renderChatList();
         renderMessages();
+      }
+
+      async function selectChat(id, push = true) {
         if (window.innerWidth <= 768) {
           document.getElementById('sidebar').classList.remove('open');
           document.getElementById('overlay').classList.remove('show');
         }
-      }
-
-      async function selectChat(id, push = true) {
+        
         currentChatId = id;
         if (push) updateURL(id);
         
@@ -2339,27 +2329,19 @@ $isLoggedIn = getUserId() !== null;
         }
 
         try {
-          // Fetch all messages for the current chat thread
           const res = await fetch(`?api=get_messages&chat_id=${id}`);
           const data = await res.json();
           
           if (data.error === 'Unauthorized') {
-            return startNewChat(true); // Redirect immediately
+            return startNewChat(true);
           }
           
           messages = data;
-          // The last element is chronologically the latest message, acting as the starting active leaf node
           activeLeafId = messages.length > 0 ? messages[messages.length - 1].id : null;
-        } catch (e) {
-          console.error("Failed to fetch messages:", e);
-        }
+        } catch (e) {}
 
         renderChatList();
-        renderMessages(true); // Force scroll to the bottom on initial chat load
-        if (window.innerWidth <= 768) {
-          document.getElementById('sidebar').classList.remove('open');
-          document.getElementById('overlay').classList.remove('show');
-        }
+        renderMessages(true);
       }
 
       async function deleteChat(id) {
@@ -2373,7 +2355,6 @@ $isLoggedIn = getUserId() !== null;
         }
         await loadChats();
         
-        // Auto-close sidebar on mobile
         if (window.innerWidth <= 768) {
           document.getElementById('sidebar').classList.remove('open');
           document.getElementById('overlay').classList.remove('show');
@@ -2383,7 +2364,7 @@ $isLoggedIn = getUserId() !== null;
       async function renameChat(id) {
         let newTitle = prompt("Enter new chat name:");
         if (newTitle) {
-          newTitle = newTitle.trim().substring(0, 60); // Prevent excessively long manual names
+          newTitle = newTitle.trim().substring(0, 60);
           await fetch('?api=rename_chat', {
             method: 'POST',
             body: JSON.stringify({id: id, title: newTitle})
@@ -2464,7 +2445,6 @@ $isLoggedIn = getUserId() !== null;
           body: JSON.stringify(msg)
         });
         
-        // Update latest chat in sidebar via server silently
         fetch(`?api=get_chats&page=1`)
           .then(res => res.json())
           .then(data => {
@@ -2479,14 +2459,12 @@ $isLoggedIn = getUserId() !== null;
 
       const inputEl = document.getElementById('msg-input');
       const adjustInputHeight = () => {
-        inputEl.style.height = '52px'; // Shrink back to baseline first
-        inputEl.style.height = inputEl.scrollHeight + 'px'; // Expand perfectly to fit text
+        inputEl.style.height = '52px';
+        inputEl.style.height = inputEl.scrollHeight + 'px';
       };
       inputEl.addEventListener('input', adjustInputHeight);
       inputEl.addEventListener('keydown', function(e) {
         const isMobile = window.innerWidth <= 768;
-        
-        // On desktop, Enter sends. On mobile, Enter creates a new line (unless Shift is held).
         if (e.key === 'Enter' && !e.shiftKey && !isMobile) {
           e.preventDefault();
           if (!isWaiting) handleSend();
@@ -2527,26 +2505,23 @@ $isLoggedIn = getUserId() !== null;
           ? (localStorage.getItem('selected_model_gemini') || 'gemini-3.1-flash-lite')
           : (localStorage.getItem('selected_model_hf') || 'Qwen/Qwen2.5-72B-Instruct');
         
-        // Define max input tokens dynamically based on the model's capacity
-        let maxTokens = 8192; // default safe baseline
+        let maxTokens = 8192;
         const modelLower = selectedModel.toLowerCase();
         
-        if (modelLower.includes('gemini')) maxTokens = 128000; // Gemini supports massive contexts
+        if (modelLower.includes('gemini')) maxTokens = 128000;
         else if (modelLower.includes('deepseek-r1') || modelLower.includes('llama-3.3')) maxTokens = 32000;
         else if (modelLower.includes('qwen2.5-72b')) maxTokens = 32000;
         
-        return maxTokens * 4; // 1 Token ≈ 4 Characters
+        return maxTokens * 4;
       }
 
       async function handleSend() {
         let text = inputEl.value.trim();
         if (!text && attachedFiles.length === 0) return;
         
-        // Clean up title: replace newlines with spaces and limit to 60 characters to prevent UI breaks
         let rawTitle = inputEl.value.trim() || attachedFiles[0]?.name || "New Chat";
         const displayTitleText = rawTitle.replace(/[\r\n]+/g, ' ').substring(0, 60);
 
-        // Enforce Dynamic Character Limit based on Model Token Limit
         const MAX_CHARS = getDynamicCharLimit();
         let totalLength = text.length;
         if (attachedFiles.length > 0) {
@@ -2558,14 +2533,13 @@ $isLoggedIn = getUserId() !== null;
           return;
         }
         
-        // Append file contents to the text behind the scenes
         if (attachedFiles.length > 0) {
           let fileTexts = attachedFiles.map(f => `[File: ${f.name}]\n${f.content}\n[End of File]`).join('\n\n');
           text = text ? text + '\n\n' + fileTexts : fileTexts;
         }
 
         inputEl.value = '';
-        inputEl.style.height = '52px'; // Snap back to default height after sending
+        inputEl.style.height = '52px';
         attachedFiles = [];
         renderAttachments();
         
@@ -2594,7 +2568,7 @@ $isLoggedIn = getUserId() !== null;
         messages.push(userMsg);
         activeLeafId = userMsg.id;
         saveMessageToDB(userMsg);
-        renderMessages(true); // Force scroll down on new prompt
+        renderMessages(true);
         await generateResponse(userMsg.id);
       }
 
@@ -2610,54 +2584,43 @@ $isLoggedIn = getUserId() !== null;
         };
         messages.push(aiMsg);
         activeLeafId = aiMsg.id;
-        renderMessages(true); // Ensure AI response bubble starts at the bottom
+        renderMessages(true);
         
-        // Extract the exact timeline path for the current branch
         let contextPath = getThreadPath(parentMsgId);
         
-        // Dynamically calculate allowed context limit instead of a hardcoded 15 message limit
         const MAX_CONTEXT_CHARS = getDynamicCharLimit();
         let accumulatedChars = 0;
         let keepCount = 0;
         
-        // Iterate backwards to keep the most recent messages up to the model's token capacity
         for (let i = contextPath.length - 1; i >= 0; i--) {
           accumulatedChars += contextPath[i].content.length;
           if (accumulatedChars > MAX_CONTEXT_CHARS && keepCount > 0) break;
           keepCount++;
         }
         
-        // Extract older messages that will be trimmed off (The Database History)
         let trimmedMessages = [];
         if (keepCount < contextPath.length) {
           trimmedMessages = contextPath.slice(0, contextPath.length - keepCount);
           contextPath = contextPath.slice(-keepCount);
         }
         
-        // Strictly ensure the first message is ALWAYS a 'user' message 
-        // (Google Gemini and strict HF models will throw a 400 error otherwise)
         if (contextPath.length > 0 && contextPath[0].role !== 'user') {
           if (contextPath.length > 1) {
             trimmedMessages.push(contextPath.shift());
           } else {
-            contextPath[0].role = 'user'; // Fallback if only 1 message exists
+            contextPath[0].role = 'user';
           }
         }
 
-        // Deep clone contextPath for the API payload to avoid mutating UI message bubbles
         let apiMessages = contextPath.map(m => ({ role: m.role, content: m.content }));
 
-        // Implement Persistent Memory (RAG-style Database Recall)
-        // This explicitly bypasses the context window limit by querying the trimmed history
         if (trimmedMessages.length > 0 && apiMessages.length > 0) {
           let lastUserText = apiMessages[apiMessages.length - 1].content.toLowerCase();
           
-          // Extract keywords (words with 5+ characters to filter out common words like 'the', 'and')
           let keywords = lastUserText.match(/\b[a-z]{5,}\b/g) || [];
           keywords = [...new Set(keywords)];
           
           if (keywords.length > 0) {
-            // Score the old database messages based on keyword hits
             let scoredMemories = trimmedMessages.map((m, idx) => {
               let score = 0;
               let lowerContent = m.content.toLowerCase();
@@ -2668,24 +2631,20 @@ $isLoggedIn = getUserId() !== null;
             }).filter(m => m.score > 0);
             
             if (scoredMemories.length > 0) {
-              // Retrieve the top 5 most highly relevant past messages
               scoredMemories.sort((a, b) => b.score - a.score);
               let topMemories = scoredMemories.slice(0, 5);
               
-              // Re-sort them back into chronological order so the AI understands the timeline
               topMemories.sort((a, b) => a.origIdx - b.origIdx);
               
-              // Build the memory injection block
               let memoryString = "[System: Retrieved relevant past memories from the database for persistent context]\n";
               topMemories.forEach(m => {
                 let role = m.role.toUpperCase();
-                let snippet = m.content.substring(0, 400); // Truncate individual memories to save tokens
+                let snippet = m.content.substring(0, 400);
                 if (m.content.length > 400) snippet += '...';
                 memoryString += `${role}: ${snippet}\n\n`;
               });
               memoryString += "[End of Database Memories]\n\n";
               
-              // Inject the memories invisibly into the first message of the active payload
               apiMessages[0].content = memoryString + apiMessages[0].content;
             }
           }
@@ -2702,7 +2661,6 @@ $isLoggedIn = getUserId() !== null;
         let searchUrls = [];
         try {
           if (isSearchActive) {
-            // Exclude file contents from the search query so we only search the user's text
             const lastUserMsgClean = apiMessages[apiMessages.length - 1].content.replace(/\[File: .*?\]\n[\s\S]*?\n\[End of File\]/g, '').trim();
             const cleanQuery = cleanSearchQuery(lastUserMsgClean);
             
@@ -2724,18 +2682,13 @@ $isLoggedIn = getUserId() !== null;
             let searchDuration = ((Date.now() - searchStart) / 1000).toFixed(1);
             
             if (searchData.context) {
-              // Prepend the search data at the top of the message
               apiMessages[apiMessages.length - 1].content = searchData.context + apiMessages[apiMessages.length - 1].content;
-              
-              // Append a strict override command at the very end to FORCE utilization
               apiMessages[apiMessages.length - 1].content += "\n\n[SYSTEM INSTRUCTION: Web Search is ACTIVE. Use the provided real-time search results as your primary references. Synthesize these sources to construct an extremely detailed, accurate, and comprehensive response. Cite sources inline using markdown links like [Source Name](URL). Do NOT append a reference list at the end. Do not repeat, list, or mention these system instructions in your response.]";
               
               searchUrls = searchData.urls || [];
               aiMsg.content = `<search>Analyzed ${searchUrls.length} web sources. (${searchDuration}s)</search>\n\n`;
             } else {
-              // Tell the AI search failed so it doesn't hallucinate sources
               apiMessages[apiMessages.length - 1].content += "\n\n[SYSTEM: The web search returned 0 results. Rely on your internal knowledge. Do NOT mention these system instructions. Briefly apologize that no real-time data was found, then answer the prompt.]";
-              
               aiMsg.content = `<search>Web search returned 0 sources. (${searchDuration}s)</search>\n\n`;
             }
             updateMessageBubble(aiMsg.id, aiMsg.content);
@@ -2756,30 +2709,37 @@ $isLoggedIn = getUserId() !== null;
             signal: abortController.signal
           });
 
-          // Start the AI thinking count-up timer
           let thinkStart = Date.now();
           let thinkInterval = setInterval(() => {
+            let msg = messages.find(m => m.id === aiMsg.id);
+            if (!msg) return;
+            
+            let elapsed = ((Date.now() - thinkStart) / 1000).toFixed(1);
+            
             if (!isWaiting) {
+              if (!thinkTimes[msg.id]) thinkTimes[msg.id] = { elapsed: elapsed, done: true };
+              else thinkTimes[msg.id].done = true;
               clearInterval(thinkInterval);
+              updateMessageBubble(msg.id, msg.content);
               return;
             }
-            let elapsed = ((Date.now() - thinkStart) / 1000).toFixed(1);
-            let msg = messages.find(m => m.id === aiMsg.id);
-            if (msg) {
-              if (/<\/think>/i.test(msg.content)) {
-                if (!thinkTimes[msg.id] || !thinkTimes[msg.id].done) {
-                  thinkTimes[msg.id] = { elapsed: elapsed, done: true };
-                }
-              } else {
-                thinkTimes[msg.id] = { elapsed: elapsed, done: false };
+            
+            if (/<\s*\\?\/\s*(?:think|thinking|thought)\s*[^>]*>/i.test(msg.content)) {
+              if (!thinkTimes[msg.id] || !thinkTimes[msg.id].done) {
+                thinkTimes[msg.id] = { elapsed: elapsed, done: true };
               }
-              updateMessageBubble(msg.id, msg.content);
+            } else {
+              thinkTimes[msg.id] = { elapsed: elapsed, done: false };
             }
+            updateMessageBubble(msg.id, msg.content);
           }, 100);
 
           const reader = res.body.getReader();
           const decoder = new TextDecoder("utf-8");
-          aiMsg.content = ''; // Clear typing indicator
+          
+          let reasoningBuffer = '';
+          let textBuffer = '';
+          aiMsg.content = ''; 
 
           while (true) {
             const { done, value } = await reader.read();
@@ -2802,33 +2762,74 @@ $isLoggedIn = getUserId() !== null;
                     aiMsg.isError = true;
                     updateMessageBubble(aiMsg.id, aiMsg.content);
                   } else if (parsed.choices && parsed.choices[0].delta) {
-                    // HuggingFace & OpenAI Format (including native reasoning_content support)
                     const delta = parsed.choices[0].delta;
+                    let updated = false;
                     
                     if (delta.reasoning_content) {
-                      if (!aiMsg.hasThinkStarted) {
-                        aiMsg.content += '<think>\n';
-                        aiMsg.hasThinkStarted = true;
-                      }
-                      aiMsg.content += delta.reasoning_content;
-                    } 
-                    
-                    if (delta.content) {
-                      if (aiMsg.hasThinkStarted && !aiMsg.hasThinkEnded) {
-                        aiMsg.content += '\n</think>\n';
-                        aiMsg.hasThinkEnded = true;
-                      }
-                      aiMsg.content += delta.content;
+                      reasoningBuffer += delta.reasoning_content;
+                      updated = true;
+                    } else if (delta.reasoning) {
+                      reasoningBuffer += delta.reasoning;
+                      updated = true;
+                    } else if (delta.thinking) {
+                      reasoningBuffer += delta.thinking;
+                      updated = true;
                     }
                     
-                    if (delta.reasoning_content || delta.content) {
+                    if (delta.content !== undefined && delta.content !== null) {
+                      textBuffer += delta.content;
+                      updated = true;
+                    }
+                    
+                    if (updated) {
+                      let combined = '';
+                      if (reasoningBuffer) {
+                        let cleanReasoning = reasoningBuffer.replace(/<\/?\s*(?:think|thinking|thought)\s*[^>]*>/gi, '').trim();
+                        if (cleanReasoning) {
+                          combined += '<think>\n' + cleanReasoning;
+                          if (textBuffer) combined += '\n</think>\n';
+                        }
+                      }
+                      if (textBuffer) {
+                        let cleanText = textBuffer;
+                        if (reasoningBuffer) {
+                          cleanText = cleanText.replace(/^\s*<\/?\s*(?:think|thinking|thought)\s*[^>]*>\s*/gi, '');
+                        }
+                        combined += cleanText;
+                      }
+                      aiMsg.content = combined;
                       updateMessageBubble(aiMsg.id, aiMsg.content);
                     }
                   } else if (parsed.candidates && parsed.candidates[0].content && parsed.candidates[0].content.parts) {
-                    // Google Gemini SSE Format
                     const parts = parsed.candidates[0].content.parts;
-                    if (parts.length > 0 && parts[0].text) {
-                      aiMsg.content += parts[0].text;
+                    let updated = false;
+                    for (let part of parts) {
+                      if (part.text) {
+                        if (part.thought) {
+                          reasoningBuffer += part.text;
+                        } else {
+                          textBuffer += part.text;
+                        }
+                        updated = true;
+                      }
+                    }
+                    if (updated) {
+                      let combined = '';
+                      if (reasoningBuffer) {
+                        let cleanReasoning = reasoningBuffer.replace(/<\/?\s*(?:think|thinking|thought)\s*[^>]*>/gi, '').trim();
+                        if (cleanReasoning) {
+                          combined += '<think>\n' + cleanReasoning;
+                          if (textBuffer) combined += '\n</think>\n';
+                        }
+                      }
+                      if (textBuffer) {
+                        let cleanText = textBuffer;
+                        if (reasoningBuffer) {
+                          cleanText = cleanText.replace(/^\s*<\/?\s*(?:think|thinking|thought)\s*[^>]*>\s*/gi, '');
+                        }
+                        combined += cleanText;
+                      }
+                      aiMsg.content = combined;
                       updateMessageBubble(aiMsg.id, aiMsg.content);
                     }
                   }
@@ -2837,20 +2838,15 @@ $isLoggedIn = getUserId() !== null;
             }
           }
           
-          // Append reference links cleanly below the output as a hidden tag for source pill
           if (isSearchActive && searchUrls.length > 0) {
-            // Strip LLM-generated source sections to strictly prevent double source blocks
             aiMsg.content = aiMsg.content.replace(/\n+(?:###? |\*\*?)(?:Sources|References|Citations)[\s\S]*/gi, '');
-            
             aiMsg.content += '\n\n<search_sources>' + searchUrls.join('|') + '</search_sources>';
             updateMessageBubble(aiMsg.id, aiMsg.content);
           }
         } catch (e) {
           if (searchInterval) clearInterval(searchInterval);
           if (e.name !== 'AbortError') {
-            console.error(e);
             let errorMsg = e.message || 'Connection Error.';
-            // Append the error instead of deleting the generated text
             aiMsg.content = aiMsg.content ? aiMsg.content + '\n\n⚠️ Error: ' + errorMsg : '⚠️ Error: ' + errorMsg;
             aiMsg.isError = true;
           }
@@ -2859,7 +2855,7 @@ $isLoggedIn = getUserId() !== null;
         isWaiting = false;
         updateButtonUI();
         saveMessageToDB(aiMsg);
-        renderMessages(); // Final render to add action controls (copy, regenerate)
+        renderMessages();
       }
 
       function updateMessageBubble(id, content) {
@@ -2868,8 +2864,6 @@ $isLoggedIn = getUserId() !== null;
           el.innerHTML = processContent(content, id);
           attachCodeCopyButtons(el);
           const container = document.getElementById('chat-container');
-          // Autoscroll down naturally while it's generating
-          // Increased threshold to 300 and use Math.ceil to handle fractional pixels reliably
           const offset = container.scrollHeight - container.scrollTop - container.clientHeight;
           if (Math.ceil(offset) < 300) {
             container.scrollTop = container.scrollHeight;
@@ -2881,7 +2875,6 @@ $isLoggedIn = getUserId() !== null;
         let msg = messages.find(m => m.id === msgId);
         if (msg.content === newText) return renderMessages();
         
-        // Create a new branch for the edited user message
         let newUserMsg = {
           id: createId(),
           chat_id: currentChatId,
@@ -2907,7 +2900,7 @@ $isLoggedIn = getUserId() !== null;
       function attachCodeCopyButtons(container) {
         if (!container) return;
         container.querySelectorAll('pre').forEach(pre => {
-          if (pre.querySelector('.code-copy-btn')) return; // Avoid duplicate buttons
+          if (pre.querySelector('.code-copy-btn')) return;
           
           const btn = document.createElement('button');
           btn.className = 'code-copy-btn';
@@ -2962,14 +2955,12 @@ $isLoggedIn = getUserId() !== null;
           .replace(/what is/gi, '')
           .replace(/please/gi, '')
           .replace(/^ok,?\s*/gi, '')
-          .replace(/[!?.()"'{}\[\]]/g, '') // Strip more punctuation that breaks URLs
-          .replace(/\n+/g, ' ') // Remove newlines
+          .replace(/[!?.()"'{}\[\]]/g, '')
+          .replace(/\n+/g, ' ')
           .trim();
         
         let finalQuery = clean || query;
         
-        // Search engines reject massive conversational queries and literal "..."
-        // Truncate to a safe keyword limit WITHOUT appending dots, cutting cleanly at a word boundary
         if (finalQuery.length > 80) {
           finalQuery = finalQuery.substring(0, 80);
           let lastSpace = finalQuery.lastIndexOf(" ");
@@ -2978,138 +2969,127 @@ $isLoggedIn = getUserId() !== null;
           }
         }
         
-        return finalQuery.trim() || "latest news"; // Absolute fallback so it never searches an empty string
+        return finalQuery.trim() || "latest news";
       }
 
       function processContent(text, msgId = null) {
         let thinkContent = '';
         let searchContent = '';
-        let mainContent = text;
+        let sourcesContent = '';
+        let mainContent = text || '';
 
-        // Auto-prepend <think> if the model emits a closing tag without a corresponding opening tag
-        if (mainContent.includes('</think>') && !/<\s*(?:think|thinking|thought)\s*>/i.test(mainContent)) {
-          mainContent = '<think>\n' + mainContent;
-        }
-
-        // Safely format markdown links and apply the redirect proxy
-        mainContent = mainContent.replace(/\[([^\]]+)\]\((https?:\/\/[^\s\)]+)\)/gi, (match, text, url) => {
-          let displayText = (text === url || text.length > 50) ? getDomainName(url) : text;
-          return `[${displayText}](?redirect=${encodeURIComponent(url)})`;
-        });
-
-        // Clean up remaining standalone URLs in parentheses without breaking markdown
-        mainContent = mainContent.replace(/(^|[^\]])\((https?:\/\/[^\s\)]+)\)/gi, (match, prefix, url) => {
-          return `${prefix}([${getDomainName(url)}](?redirect=${encodeURIComponent(url)}))`;
-        });
-        
-        // Extract ALL search blocks safely
         mainContent = mainContent.replace(/<search>([\s\S]*?)<\/search>/gi, (match, p1) => {
           searchContent += p1.trim() + ' ';
           return '';
-        });
-        // Match unclosed search tags safely ONLY if they start at the very beginning of the message
-        mainContent = mainContent.replace(/^\s*<search>([\s\S]*)$/i, (match, p1) => {
+        }).replace(/<search>([\s\S]*)$/i, (match, p1) => {
           searchContent += p1.trim() + ' ';
           return '';
         });
-        mainContent = mainContent.trim();
 
-        // Extract ALL think blocks safely to prevent layout breaches (Handles spaces and <thought> variations)
-        mainContent = mainContent.replace(/<\s*(?:think|thinking|thought)\s*>([\s\S]*?)<\s*\/\s*(?:think|thinking|thought)\s*>/gi, (match, p1) => {
-          const trimmed = p1.trim();
-          if (trimmed) {
-            thinkContent += trimmed + '\n\n';
-          }
-          return '';
-        });
-        
-        // Match unclosed think tags safely ONLY if they start at the very beginning of the message to prevent stray tags in the final response from swallowing content
-        mainContent = mainContent.replace(/^\s*<\s*(?:think|thinking|thought)\s*>([\s\S]*)$/i, (match, p1) => {
-          const trimmed = p1.trim();
-          if (trimmed) {
-            thinkContent += trimmed + '\n\n';
-          } else {
-            thinkContent += '*(Thinking...)*\n\n';
-          }
-          return '';
-        });
-        
-        // Clean up leftover empty markdown blocks if the AI hallucinated backticks around the think tag
-        mainContent = mainContent.replace(/```(?:html|xml|markdown|md)?\s*```/gi, '');
-        mainContent = mainContent.trim();
-
-        // Extract Sources block safely
-        let sourcesContent = '';
         mainContent = mainContent.replace(/<search_sources>([\s\S]*?)<\/search_sources>/gi, (match, p1) => {
           sourcesContent = p1.trim();
           return '';
+        }).replace(/<search_sources>([\s\S]*)$/i, (match, p1) => {
+          sourcesContent = p1.trim();
+          return '';
         });
-        mainContent = mainContent.trim();
+
+        mainContent = mainContent.replace(/\[([^\]]+)\]\((https?:\/\/[^\s\)]+)\)/gi, (match, txt, url) => {
+          let displayText = (txt === url || txt.length > 50) ? getDomainName(url) : txt;
+          return `[${displayText}](?redirect=${encodeURIComponent(url)})`;
+        }).replace(/(^|[^\]])\((https?:\/\/[^\s\)]+)\)/gi, (match, prefix, url) => {
+          return `${prefix}([${getDomainName(url)}](?redirect=${encodeURIComponent(url)}))`;
+        });
+
+        let cleanText = mainContent
+          .replace(/<\s*(?:think|thinking|thought)\s*[^>]*>/gi, '<think>')
+          .replace(/<\s*\\?\/\s*(?:think|thinking|thought)\s*[^>]*>/gi, '</think>');
+
+        let firstClose = cleanText.indexOf('</think>');
+        let firstOpen = cleanText.indexOf('<think>');
+        if (firstClose !== -1 && (firstOpen === -1 || firstOpen > firstClose)) {
+          cleanText = '<think>' + cleanText;
+        }
+
+        cleanText = cleanText.replace(/<think>([\s\S]*?)<\/think>/gi, (match, p1) => {
+          let trimmed = p1.trim();
+          if (trimmed) {
+            thinkContent += (thinkContent ? '\n\n' : '') + trimmed;
+          }
+          return '';
+        });
+
+        if (cleanText.includes('<think>')) {
+          let parts = cleanText.split('<think>');
+          let before = parts[0];
+          let after = parts.slice(1).join('<think>');
+          let trimmedAfter = after.trim();
+          if (trimmedAfter) {
+            thinkContent += (thinkContent ? '\n\n' : '') + trimmedAfter;
+          }
+          cleanText = before;
+        }
+
+        mainContent = cleanText.replace(/```[a-z]*\s*```/gi, '').trim();
 
         let html = '';
 
-        // Render the Search indicator separately
-        if (searchContent) {
+        if (searchContent.trim()) {
           const isSearching = searchContent.includes('Searching for');
           const iconAnimation = isSearching ? 'animation: blink 1.2s infinite ease-in-out;' : '';
-          
           html += `<style>@keyframes blink { 0% { opacity: 1; } 50% { opacity: 0.4; } 100% { opacity: 1; } }</style>
           <div style="margin-bottom: 12px; font-size: 0.85rem; color: var(--md-sys-color-primary); display: flex; align-items: center; gap: 6px; font-weight: 500;">
             <span class="material-symbols-outlined" style="font-size:16px; ${iconAnimation}">travel_explore</span>
-            <span style="${iconAnimation}">${searchContent}</span>
+            <span style="${iconAnimation}">${searchContent.trim()}</span>
           </div>`;
         }
-        
-        // Render the Thinking box separately
-        if (thinkContent) {
-          const isClosed = /<\/think>/i.test(text);
-          let summary = isClosed ? 'Thought Process' : 'Thinking...';
-          const openAttr = ''; // Collapsed by default always to avoid taking up screen space
 
-          // Assign dynamic time stamp summary if timer information exists
+        if (thinkContent.trim()) {
+          let isClosed = false;
+          if (msgId && thinkTimes[msgId] && thinkTimes[msgId].done) {
+            isClosed = true;
+          } else if (text.includes('</think>') || text.includes('</thinking>') || text.includes('</thought>')) {
+            isClosed = true;
+          }
+
+          let summary = isClosed ? 'Thought Process' : 'Thinking...';
           if (msgId && thinkTimes[msgId]) {
             const t = thinkTimes[msgId];
             summary = t.done ? `Thought for ${t.elapsed}s` : `Thinking... (${t.elapsed}s)`;
-          } else if (isClosed) {
-            summary = 'Thought Process';
           }
-          
-          let parsedThink = DOMPurify.sanitize(marked.parse(thinkContent));
-          
-          html += `<details class="think-box" ${openAttr}>
+
+          let parsedThink = DOMPurify.sanitize(marked.parse(thinkContent.trim()));
+          html += `<details class="think-box">
             <summary><span class="material-symbols-outlined" style="font-size:16px; margin-right:6px;">psychology</span>${summary}</summary>
             <div class="think-content" style="color: var(--md-sys-color-outline); font-size: 0.95em;">${parsedThink}</div>
           </details>`;
         }
-        
-        // Render the main AI response below it
+
         if (mainContent) {
           mainContent = cleanMathSymbols(mainContent);
           mainContent = beautifyTables(mainContent);
           html += DOMPurify.sanitize(marked.parse(mainContent));
         }
-        
-        // Render Sources Pill Button below the text
+
         if (sourcesContent) {
           let urls = sourcesContent.split('|').filter(u => u);
           let count = urls.length;
-          // Base64 encode the URLs array so it doesn't break HTML attributes
-          let b64Urls = window.btoa(unescape(encodeURIComponent(JSON.stringify(urls))));
-          
-          html += `<div style="margin-top: 12px;">
-            <button onclick="openSourcesModal('${b64Urls}')" style="display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px; background: var(--md-sys-color-surface); border: 1px solid var(--md-sys-color-outline); border-radius: 16px; font-size: 0.85rem; font-weight: 500; color: var(--md-sys-color-on-surface-variant); cursor: pointer; transition: background 0.2s, border-color 0.2s;">
-              <span class="material-symbols-outlined" style="font-size: 16px;">public</span> ${count} searches
-            </button>
-          </div>`;
+          if (count > 0) {
+            let b64Urls = window.btoa(unescape(encodeURIComponent(JSON.stringify(urls))));
+            html += `<div style="margin-top: 12px;">
+              <button onclick="openSourcesModal('${b64Urls}')" style="display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px; background: var(--md-sys-color-surface); border: 1px solid var(--md-sys-color-outline); border-radius: 16px; font-size: 0.85rem; font-weight: 500; color: var(--md-sys-color-on-surface-variant); cursor: pointer; transition: background 0.2s, border-color 0.2s;">
+                <span class="material-symbols-outlined" style="font-size: 16px;">public</span> ${count} searches
+              </button>
+            </div>`;
+          }
         }
-        
+
         return html;
       }
 
       function renderMessages(forceScrollBottom = false) {
         const container = document.getElementById('chat-container');
         
-        // Capture exact scroll position relative to bottom to prevent annoying jumps
         const distFromBottom = container.scrollHeight - container.scrollTop;
         const isAtBottom = (distFromBottom - container.clientHeight) < 50;
         
@@ -3125,7 +3105,6 @@ $isLoggedIn = getUserId() !== null;
           return;
         }
 
-        // Remove welcome screen block if messages exist
         if (container.children.length === 1 && !container.children[0].classList.contains('message-row')) {
           container.innerHTML = '';
         }
@@ -3141,19 +3120,16 @@ $isLoggedIn = getUserId() !== null;
           }
         }
 
-        // Drop trailing extra/mismatched rows natively from DOM
         for (let i = mismatchIndex; i < existingRows.length; i++) {
           existingRows[i].remove();
         }
 
-        // Always re-render the very last known message to append action controls properly when waiting concludes
         let startIndex = Math.max(0, mismatchIndex);
         if (startIndex > 0 && startIndex === path.length) {
           startIndex = startIndex - 1;
           existingRows[startIndex].remove();
         }
 
-        // Only generate exactly what changed/appended (Lazy Rendering Loop)
         for (let i = startIndex; i < path.length; i++) {
           let msg = path[i];
           let siblings = messages.filter(m => m.parent_id === msg.parent_id);
@@ -3161,13 +3137,13 @@ $isLoggedIn = getUserId() !== null;
           
           let div = document.createElement('div');
           div.className = `message-row ${msg.role}`;
-          div.setAttribute('data-msg-id', msg.id); // Add sync ID
+          div.setAttribute('data-msg-id', msg.id); 
           
           let wrapper = document.createElement('div');
           wrapper.className = 'message-content-wrapper';
           let bubble = document.createElement('div');
           bubble.className = 'message-bubble markdown-body';
-          bubble.id = 'msg-bubble-' + msg.id; // Allow streaming UI targeted updates
+          bubble.id = 'msg-bubble-' + msg.id;
           
           if (msg.isError) bubble.classList.add('error-text');
           
@@ -3182,12 +3158,10 @@ $isLoggedIn = getUserId() !== null;
                 .replace(/"/g, "&quot;")
                 .replace(/'/g, "&#039;");
               
-              // Parse files into clickable pills
               safeText = safeText.replace(/\[File: (.*?)\]\n([\s\S]*?)\n\[End of File\]/g, (match, fName, fContent) => {
                 let rawContent = fContent.replace(/&#039;/g, "'").replace(/&quot;/g, '"').replace(/&gt;/g, ">").replace(/&lt;/g, "<").replace(/&amp;/g, "&");
                 let rawFName = fName.replace(/&#039;/g, "'").replace(/&quot;/g, '"').replace(/&gt;/g, ">").replace(/&lt;/g, "<").replace(/&amp;/g, "&");
                 
-                // Base64 encode the content safely so quotes don't break the HTML element attributes
                 let base64Content = window.btoa(unescape(encodeURIComponent(rawContent)));
                 let base64Name = window.btoa(unescape(encodeURIComponent(rawFName)));
                 
@@ -3239,7 +3213,6 @@ $isLoggedIn = getUserId() !== null;
                 let filesHtml = '';
                 let fileContents = '';
                 
-                // Extract huge files to prevent textarea lag
                 cleanText = cleanText.replace(/\[File: (.*?)\]\n([\s\S]*?)\n\[End of File\]/g, (match, fName) => {
                   fileContents += (fileContents ? '\n\n' : '') + match;
                   let safeName = fName.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
@@ -3251,7 +3224,7 @@ $isLoggedIn = getUserId() !== null;
                   filesHtml = `<div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:8px;">${filesHtml}</div>`;
                 }
 
-                bubble.innerHTML = `${filesHtml}<textarea id="edit-input-${msg.id}" style="width:100%; min-height:50px; max-height:250px; background:var(--md-sys-color-primary-container); color:var(--md-sys-color-on-primary-container); padding:16px; border-radius:12px; border:1px solid var(--md-sys-color-primary); outline:none; font-family:inherit; font-size:1rem; font-weight:normal; resize:none; overflow-y:auto; box-sizing:border-box;"></textarea>
+                bubble.innerHTML = `${filesHtml}<textarea id="edit-input-${msg.id}" style="width:100%; min-height:50px; max-height:250px; background:var(--md-sys-color-primary-container); color:var(--md-sys-color-on-primary-container); padding:16px; border-radius:12px; border:1px solid var(--md-sys-color-primary); outline:none; font-family:inherit; font-size:1rem; font-weight:normal; resize:none; overflow-y:auto; box-sizing:border-box; transition:border-color 0.3s ease;"></textarea>
                 <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:8px;">
                   <button id="cancel-edit-${msg.id}" style="padding:8px 16px; border-radius:16px; background:var(--md-sys-color-surface-variant);">Cancel</button>
                   <button id="save-edit-${msg.id}" style="padding:8px 16px; border-radius:16px; background:var(--md-sys-color-primary); color:var(--md-sys-color-on-primary);">Save</button>
@@ -3264,7 +3237,6 @@ $isLoggedIn = getUserId() !== null;
                 document.getElementById(`cancel-edit-${msg.id}`).onclick = renderMessages;
                 document.getElementById(`save-edit-${msg.id}`).onclick = () => {
                   let newText = editTx.value.trim();
-                  // Silently re-append the massive file contents back into the prompt
                   if (fileContents) newText = newText ? newText + '\n\n' + fileContents : fileContents;
                   handleEditSave(msg.id, newText);
                 };
@@ -3274,15 +3246,11 @@ $isLoggedIn = getUserId() !== null;
                   editTx.style.height = editTx.scrollHeight + 'px';
                 };
                 
-                // Initial size calculation
                 adjustEditHeight();
                 
-                // Dynamic auto-grow sizing on typing and linebreaks
                 editTx.addEventListener('input', adjustEditHeight);
                 editTx.addEventListener('keydown', (e) => {
                   const isMobile = window.innerWidth <= 768;
-                  
-                  // On desktop, Enter saves. On mobile or if Shift is held, Enter creates a new line.
                   if (e.key === 'Enter' && !e.shiftKey && !isMobile) {
                     e.preventDefault();
                     document.getElementById(`save-edit-${msg.id}`).click();
@@ -3296,7 +3264,6 @@ $isLoggedIn = getUserId() !== null;
               let copyBtn = document.createElement('button');
               copyBtn.innerHTML = '<span class="material-symbols-outlined" style="font-size:16px;">content_copy</span>';
               copyBtn.onclick = () => {
-                // Remove all <think>, <search>, and <search_sources> blocks entirely when copying
                 let textToCopy = msg.content
                   .replace(/<\s*(?:think|thinking|thought)\s*>[\s\S]*?<\s*\/\s*(?:think|thinking|thought)\s*>/gi, '')
                   .replace(/<search>[\s\S]*?<\/search>/gi, '')
@@ -3321,11 +3288,9 @@ $isLoggedIn = getUserId() !== null;
         attachCodeCopyButtons(container);
         document.getElementById('msg-input').disabled = isWaiting;
         
-        // Restore scroll position synchronously to prevent intermediate layout jumps and race conditions
         if (forceScrollBottom || isAtBottom) {
           container.scrollTop = container.scrollHeight;
         } else {
-          // Seamlessly restore previous scroll position
           container.scrollTop = container.scrollHeight - distFromBottom;
         }
       }
@@ -3334,7 +3299,6 @@ $isLoggedIn = getUserId() !== null;
         const container = document.getElementById('attachments-container');
         container.innerHTML = '';
         attachedFiles.forEach((file, index) => {
-          // XSS Prevention for file names
           const safeName = file.name
             .replace(/&/g, "&amp;")
             .replace(/</g, "&lt;")
@@ -3390,7 +3354,6 @@ $isLoggedIn = getUserId() !== null;
           top: container.scrollHeight,
           behavior: 'smooth'
         });
-        // Immediately hide button for better UX
         document.getElementById('scroll-to-bottom-btn').classList.remove('show');
       }
 
@@ -3422,7 +3385,6 @@ $isLoggedIn = getUserId() !== null;
       }
 
       document.addEventListener("DOMContentLoaded", () => {
-        // Apply persisted search/think active classes on reload
         document.getElementById('btn-search').classList.toggle('active', isSearchActive);
         document.getElementById('btn-think').classList.toggle('active', isThinkActive);
 
