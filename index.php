@@ -292,31 +292,142 @@ if (isset($_GET['api'])) {
     jsonResponse(['status' => 'success']);
   }
 
+  function scrapeWebpageContent($url) {
+    $opts = [
+      'http' => [
+        'method' => 'GET',
+        'header' => "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36\r\nAccept: text/html,application/xhtml+xml\r\n",
+        'timeout' => 4,
+        'ignore_errors' => true
+      ],
+      'ssl' => ['verify_peer' => false, 'verify_peer_name' => false]
+    ];
+    $html = @file_get_contents($url, false, stream_context_create($opts));
+    if (empty($html)) return "";
+    
+    $dom = new DOMDocument();
+    @$dom->loadHTML('<?xml encoding="UTF-8">' . $html, LIBXML_NOERROR | LIBXML_NOWARNING);
+    
+    // Remove unnecessary elements for clean content extraction
+    $removeTags = ['script', 'style', 'nav', 'header', 'footer', 'aside', 'noscript', 'iframe'];
+    foreach ($removeTags as $tag) {
+      $elements = $dom->getElementsByTagName($tag);
+      $remove = [];
+      foreach ($elements as $item) $remove[] = $item;
+      foreach ($remove as $item) $item->parentNode->removeChild($item);
+    }
+    
+    $xpath = new DOMXPath($dom);
+    $paragraphs = $xpath->query('//p | //h1 | //h2 | //h3 | //article | //main');
+    $text = "";
+    foreach ($paragraphs as $node) {
+      $nodeText = trim(preg_replace('/\s+/', ' ', $node->textContent));
+      if (!empty($nodeText)) {
+        $text .= $nodeText . "\n";
+      }
+      if (strlen($text) > 1500) break; // Limit extracted length per site to save context
+    }
+    return trim(substr($text, 0, 1500));
+  }
+
+  function getRandomIpHeader() {
+    $ip = mt_rand(11, 197) . '.' . mt_rand(0, 255) . '.' . mt_rand(0, 255) . '.' . mt_rand(1, 254);
+    return "X-Forwarded-For: $ip\r\nClient-IP: $ip\r\nTrue-Client-IP: $ip\r\nX-Real-IP: $ip\r\n";
+  }
+
+  function searchWordPressApi($domain, $query) {
+    $cleanQ = trim(str_replace('-site:youtube.com', '', $query));
+    $wpApiUrl = "https://{$domain}/wp-json/wp/v2/posts?search=" . urlencode($cleanQ) . "&_fields=title,link,excerpt&per_page=5";
+    $opts = [
+      'http' => [
+        'method' => 'GET',
+        'header' => "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36\r\n" . getRandomIpHeader(),
+        'timeout' => 2.5,
+        'ignore_errors' => true
+      ],
+      'ssl' => ['verify_peer' => false, 'verify_peer_name' => false]
+    ];
+    $json = @file_get_contents($wpApiUrl, false, stream_context_create($opts));
+    if (!$json) return [];
+    
+    $posts = json_decode($json, true);
+    if (!is_array($posts)) return [];
+    
+    $results = [];
+    foreach ($posts as $post) {
+      $url = $post['link'] ?? '';
+      $title = html_entity_decode(strip_tags($post['title']['rendered'] ?? ''), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+      $excerpt = html_entity_decode(strip_tags($post['excerpt']['rendered'] ?? ''), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+      if ($url && filter_var($url, FILTER_VALIDATE_URL)) {
+        $results[] = [
+          'url' => $url,
+          'title' => trim($title),
+          'snippet' => trim($excerpt)
+        ];
+      }
+    }
+    return $results;
+  }
+
   if ($api === 'search') {
     $req = json_decode(file_get_contents('php://input'), true);
     $query = $req['q'] ?? ($_GET['q'] ?? '');
+    
+    // Exclude YouTube directly at the search engine level
+    if (!empty($query) && strpos($query, '-site:youtube.com') === false) {
+      $query .= ' -site:youtube.com';
+    }
+
     $searchContext = "";
     $urls = [];
     $snippets = [];
+    $sourceDetails = [];
 
+    // WordPress REST API: Direct domain search if a domain is mentioned in query
+    if (preg_match('/\b([a-z0-9\-]+\.[a-z]{2,})\b/i', $query, $domainMatch)) {
+      $targetDomain = strtolower($domainMatch[1]);
+      $ignoredDomains = ['youtube.com', 'youtu.be', 'duckduckgo.com', 'google.com', 'wikipedia.org', 'fandom.com'];
+      if (!in_array($targetDomain, $ignoredDomains)) {
+        $wpResults = searchWordPressApi($targetDomain, $query);
+        foreach ($wpResults as $res) {
+          if (count($urls) >= 15) break;
+          if (!in_array($res['url'], $urls)) {
+            $snippets[] = "- [Source: {$res['url']}]\n  Title: {$res['title']}\n  Snippet: {$res['snippet']}";
+            $urls[] = $res['url'];
+            $sourceDetails[] = ['url' => $res['url'], 'title' => $res['title'], 'snippet' => $res['snippet'], 'scraped' => ''];
+          }
+        }
+      }
+    }
+
+    // Expanded list of free SearxNG metasearch engines
     $searxInstances = [
       'https://searx.be', 'https://paulgo.io', 'https://search.mdosch.de',
-      'https://searx.tiekoetter.com', 'https://search.inetol.net'
+      'https://searx.tiekoetter.com', 'https://search.inetol.net',
+      'https://search.rhscz.eu', 'https://searx.work', 'https://search.sapti.me',
+      'https://searx.fi', 'https://searx.ro', 'https://search.ononoki.org',
+      'https://search.albony.in', 'https://searx.nixnet.services'
     ];
     shuffle($searxInstances);
     
     $searxOpts = [
       'http' => [
         'method'  => 'GET',
-        'header'  => "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)\r\nAccept: application/json\r\n",
-        'timeout' => 1.2
-      ]
+        'header'  => "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36\r\nAccept: application/json\r\n" . getRandomIpHeader(),
+        'timeout' => 2.0,
+        'ignore_errors' => true
+      ],
+      'ssl' => ['verify_peer' => false, 'verify_peer_name' => false]
     ];
 
     $searxAttempts = 0;
     foreach ($searxInstances as $instance) {
-      if ($searxAttempts >= 2) break;
+      if ($searxAttempts >= 3) break; // Try up to 3 different instances
       $searxAttempts++;
+      
+      // Rotate the spoofed IP for every single attempt to bypass limits
+      $searxOpts['http']['header'] = "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36\r\nAccept: application/json\r\n" . getRandomIpHeader();
+      
       $searxJson = @file_get_contents($instance . '/search?q=' . urlencode($query) . '&format=json', false, stream_context_create($searxOpts));
       if ($searxJson) {
         $searxData = json_decode($searxJson, true);
@@ -326,9 +437,10 @@ if (isset($_GET['api'])) {
             $url = $result['url'] ?? '';
             $title = $result['title'] ?? '';
             $content = $result['content'] ?? '';
-            if ($url && $content && !in_array($url, $urls)) {
+            if ($url && $content && !in_array($url, $urls) && strpos($url, 'youtube.com') === false && strpos($url, 'youtu.be') === false) {
               $snippets[] = "- [Source: $url]\n  Title: $title\n  Snippet: $content";
               $urls[] = $url;
+              $sourceDetails[] = ['url' => $url, 'title' => $title, 'snippet' => $content, 'scraped' => ''];
             }
           }
           break;
@@ -336,14 +448,17 @@ if (isset($_GET['api'])) {
       }
     }
 
+    // Fallback 1: DuckDuckGo Lite with IP Spoofing
     if (count($urls) < 5) {
       $ddgOpts = [
         'http' => [
           'method'  => 'POST',
-          'header'  => "User-Agent: Mozilla/5.0 (Windows NT 10.0)\r\nContent-type: application/x-www-form-urlencoded\r\nReferer: https://lite.duckduckgo.com/\r\n",
+          'header'  => "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36\r\nContent-type: application/x-www-form-urlencoded\r\nReferer: https://lite.duckduckgo.com/\r\n" . getRandomIpHeader(),
           'content' => 'q=' . urlencode($query),
-          'timeout' => 2.5
-        ]
+          'timeout' => 2.5,
+          'ignore_errors' => true
+        ],
+        'ssl' => ['verify_peer' => false, 'verify_peer_name' => false]
       ];
       $html = @file_get_contents('https://lite.duckduckgo.com/lite/', false, stream_context_create($ddgOpts));
       if ($html) {
@@ -352,11 +467,92 @@ if (isset($_GET['api'])) {
         $limit = min(15, count($linkMatches[1]));
         for ($i = 0; $i < $limit; $i++) {
           $url = $linkMatches[1][$i];
+          if (filter_var($url, FILTER_VALIDATE_URL) && strpos($url, 'duckduckgo.com') === false && !in_array($url, $urls) && strpos($url, 'youtube.com') === false && strpos($url, 'youtu.be') === false) {
+            $title = trim(strip_tags($linkMatches[2][$i]));
+            $text = isset($descMatches[1][$i]) ? trim(strip_tags($descMatches[1][$i])) : '';
+            $snippets[] = "- [Source: $url]\n  Title: $title\n  Snippet: $text";
+            $urls[] = $url;
+            $sourceDetails[] = ['url' => $url, 'title' => $title, 'snippet' => $text, 'scraped' => ''];
+          }
+        }
+      }
+    }
+
+    // Fallback 2: Wikipedia Search API if the other engines failed
+    if (count($urls) < 4) {
+      $wikiUrl = "https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=" . urlencode(str_replace('-site:youtube.com', '', $query)) . "&utf8=&format=json";
+      $wikiOpts = [
+        'http' => [
+          'method' => 'GET',
+          'header' => "User-Agent: PHPChatAI/1.0\r\n",
+          'timeout' => 2.0,
+          'ignore_errors' => true
+        ],
+        'ssl' => ['verify_peer' => false, 'verify_peer_name' => false]
+      ];
+      $wikiJson = @file_get_contents($wikiUrl, false, stream_context_create($wikiOpts));
+      if ($wikiJson) {
+        $wikiData = json_decode($wikiJson, true);
+        if (!empty($wikiData['query']['search'])) {
+          foreach ($wikiData['query']['search'] as $result) {
+            if (count($urls) >= 15) break;
+            $url = 'https://en.wikipedia.org/wiki/' . urlencode(str_replace(' ', '_', $result['title']));
+            $title = $result['title'];
+            $content = strip_tags($result['snippet']);
+            if (!in_array($url, $urls)) {
+              $snippets[] = "- [Source: $url]\n  Title: $title\n  Snippet: $content";
+              $urls[] = $url;
+              $sourceDetails[] = ['url' => $url, 'title' => $title, 'snippet' => $content, 'scraped' => ''];
+            }
+          }
+        }
+      }
+    }
+
+    // Fallback 3: Fandom Wikis (via targeted DDG search) for pop culture, games, and lore
+    if (count($urls) < 4) {
+      $fandomQuery = trim(str_replace('-site:youtube.com', '', $query)) . ' site:fandom.com';
+      $fandomOpts = [
+        'http' => [
+          'method'  => 'POST',
+          'header'  => "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36\r\nContent-type: application/x-www-form-urlencoded\r\nReferer: https://lite.duckduckgo.com/\r\n" . getRandomIpHeader(),
+          'content' => 'q=' . urlencode($fandomQuery),
+          'timeout' => 2.5,
+          'ignore_errors' => true
+        ],
+        'ssl' => ['verify_peer' => false, 'verify_peer_name' => false]
+      ];
+      $fandomHtml = @file_get_contents('https://lite.duckduckgo.com/lite/', false, stream_context_create($fandomOpts));
+      if ($fandomHtml) {
+        preg_match_all('/<a rel="nofollow" href="([^"]+)".*?>(.*?)<\/a>/is', $fandomHtml, $linkMatches);
+        preg_match_all('/<td class=\'result-snippet\'>(.*?)<\/td>/is', $fandomHtml, $descMatches);
+        $limit = min(5, count($linkMatches[1]));
+        for ($i = 0; $i < $limit; $i++) {
+          $url = $linkMatches[1][$i];
           if (filter_var($url, FILTER_VALIDATE_URL) && strpos($url, 'duckduckgo.com') === false && !in_array($url, $urls)) {
             $title = trim(strip_tags($linkMatches[2][$i]));
             $text = isset($descMatches[1][$i]) ? trim(strip_tags($descMatches[1][$i])) : '';
             $snippets[] = "- [Source: $url]\n  Title: $title\n  Snippet: $text";
             $urls[] = $url;
+            $sourceDetails[] = ['url' => $url, 'title' => $title, 'snippet' => $text, 'scraped' => ''];
+          }
+        }
+      }
+    }
+
+    // Fallback 4: WordPress Native REST API on domains discovered in search results
+    if (count($urls) < 4 && !empty($urls)) {
+      foreach ($urls as $existingUrl) {
+        $host = parse_url($existingUrl, PHP_URL_HOST);
+        if ($host) {
+          $wpResults = searchWordPressApi($host, $query);
+          foreach ($wpResults as $res) {
+            if (count($urls) >= 15) break;
+            if (!in_array($res['url'], $urls)) {
+              $snippets[] = "- [Source: {$res['url']}]\n  Title: {$res['title']}\n  Snippet: {$res['snippet']}";
+              $urls[] = $res['url'];
+              $sourceDetails[] = ['url' => $res['url'], 'title' => $res['title'], 'snippet' => $res['snippet'], 'scraped' => ''];
+            }
           }
         }
       }
@@ -365,10 +561,24 @@ if (isset($_GET['api'])) {
     if (!empty($snippets)) {
       $snippets = array_slice($snippets, 0, 25);
       $urls = array_slice($urls, 0, 25);
-      $searchContext = "[REAL-TIME WEB SEARCH RESULTS (Found " . count($urls) . " sources):]\n" . implode("\n\n", $snippets) . "\n\n[END OF WEB SEARCH RESULTS]\n\n";
+      $sourceDetails = array_slice($sourceDetails, 0, 25);
+      
+      $searchContext = "[REAL-TIME WEB SEARCH RESULTS (Found " . count($urls) . " sources):]\n" . implode("\n\n", $snippets) . "\n\n";
+      $searchContext .= "[DETAILED SITE CONTENTS FROM SCRAPING:]\n";
+      $scrapedCount = 0;
+      foreach ($sourceDetails as &$sd) {
+        if ($scrapedCount >= 3) break;
+        $pageContent = scrapeWebpageContent($sd['url']);
+        if (!empty($pageContent)) {
+          $sd['scraped'] = $pageContent;
+          $searchContext .= "- [Scraped from: {$sd['url']}]\n  Content: $pageContent...\n\n";
+          $scrapedCount++;
+        }
+      }
+      $searchContext .= "[END OF WEB SEARCH RESULTS]\n\n";
     }
 
-    jsonResponse(['context' => $searchContext, 'urls' => $urls]);
+    jsonResponse(['context' => $searchContext, 'urls' => $urls, 'details' => $sourceDetails]);
   }
 
   if ($api === 'chat') {
@@ -852,7 +1062,7 @@ $isLoggedIn = getUserId() !== null;
         gap: 6px;
         min-width: 0;
         width: 100%; 
-        overflow-x: hidden;
+        overflow-x: visible;
       }
       .user .message-bubble {
         background: var(--md-sys-color-primary-container);
@@ -875,7 +1085,7 @@ $isLoggedIn = getUserId() !== null;
         word-wrap: break-word;
         overflow-wrap: break-word;
         width: 100%;
-        overflow-x: hidden;
+        overflow-x: visible;
         min-width: 0;
       }
       .markdown-body pre {
@@ -917,31 +1127,59 @@ $isLoggedIn = getUserId() !== null;
         display: block;
         overflow-x: auto;
       }
-      .code-copy-btn {
-        position: absolute;
-        top: 8px;
-        right: 8px;
-        background: rgba(255, 255, 255, 0.12);
-        border: 1px solid rgba(255, 255, 255, 0.2);
-        color: #d1d5db;
-        border-radius: 6px;
-        padding: 4px 8px;
-        font-size: 0.75rem;
+      .code-wrapper {
+        position: relative;
+        margin: 12px 0;
+        z-index: 1;
+      }
+      .markdown-body .code-wrapper pre {
+        margin: 0;
+      }
+      .code-action-bar-container {
+        position: sticky;
+        top: 12px;
+        width: 100%;
+        height: 0;
+        display: flex;
+        justify-content: flex-end;
+        z-index: 10;
+        pointer-events: none;
+      }
+      .code-action-bar {
+        display: flex;
+        gap: 6px;
+        padding: 8px;
+        pointer-events: auto;
+      }
+      .code-copy-btn, .code-preview-btn {
+        background: rgba(40, 40, 40, 0.85);
+        border: 1px solid rgba(255, 255, 255, 0.15);
+        color: #e3e3e3;
+        border-radius: 8px;
+        padding: 16px 14px;
+        font-size: 0.85rem;
+        font-weight: 500;
         display: flex;
         align-items: center;
-        gap: 4px;
+        gap: 6px;
         opacity: 0;
-        z-index: 20;
+        transition: all 0.2s ease;
+        cursor: pointer;
+        backdrop-filter: blur(4px);
+        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
       }
-      .markdown-body pre:hover .code-copy-btn {
+      .code-wrapper:hover .code-copy-btn,
+      .code-wrapper:hover .code-preview-btn {
         opacity: 1;
       }
-      .code-copy-btn:hover {
-        background: rgba(255, 255, 255, 0.18);
+      .code-copy-btn:hover, .code-preview-btn:hover {
+        background: rgba(60, 60, 60, 0.95);
         color: #ffffff;
+        transform: translateY(-1px);
+        box-shadow: 0 6px 16px rgba(0,0,0,0.3);
       }
-      .code-copy-btn span {
-        font-size: 14px !important;
+      .code-copy-btn span, .code-preview-btn span {
+        font-size: 18px !important;
       }
       .markdown-body p {
         margin-bottom: 16px;
@@ -1091,7 +1329,7 @@ $isLoggedIn = getUserId() !== null;
         gap: 6px;
         background: var(--md-sys-color-surface);
         border: 1px solid var(--md-sys-color-outline);
-        padding: 4px 10px;
+        padding: 16px 10px;
         border-radius: 16px;
         font-size: 0.85rem;
         color: var(--md-sys-color-on-surface);
@@ -1480,7 +1718,7 @@ $isLoggedIn = getUserId() !== null;
                 <button class="toggle-btn icon-only" onclick="document.getElementById('txt-upload').click()" title="Upload a text file">
                   <span class="material-symbols-outlined" style="font-size: 20px;">upload_file</span>
                 </button>
-                <input type="file" id="txt-upload" accept=".txt,.csv,.json,.md" style="display:none" onchange="handleFileUpload(event)">
+                <input type="file" id="txt-upload" accept=".txt,.csv,.json,.md,.html,.php,.js,.css" style="display:none" onchange="handleFileUpload(event)">
               </div>
               <button class="send-btn" id="send-btn" onclick="handleAction()">
                 <span class="material-symbols-outlined" id="send-icon" style="font-size: 20px;">arrow_upward</span>
@@ -1492,14 +1730,16 @@ $isLoggedIn = getUserId() !== null;
     </div>
 
     <div id="sources-modal" class="modal">
-      <div class="modal-content" style="max-width: 600px;">
-        <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 16px;">
-          <h2 style="margin: 0; font-size: 1.1rem; font-weight: 500; color: var(--md-sys-color-on-surface);">Sources & References</h2>
+      <!-- Force height and hide outer scrollbar to fix the cramped UI and double-scroll issues -->
+      <div class="modal-content" style="max-width: 800px; width: 92%; max-height: 85vh; height: 85vh; display: flex; flex-direction: column; padding: 24px; overflow: hidden !important;">
+        <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 16px; flex-shrink: 0;">
+          <h2 style="margin: 0; font-size: 1.2rem; font-weight: 500; color: var(--md-sys-color-on-surface);">Sources & References</h2>
           <button onclick="closeSourcesModal()" style="padding: 6px; border-radius: 50%; background: var(--md-sys-color-surface-variant); display: flex; align-items: center; justify-content: center; border: 1px solid var(--md-sys-color-outline);">
             <span class="material-symbols-outlined" style="font-size: 20px;">close</span>
           </button>
         </div>
-        <div id="sources-modal-content" style="display: flex; flex-direction: column; gap: 8px; max-height: 60vh; overflow-y: auto; margin-bottom: 8px;"></div>
+        <!-- Inner container gets the scrolling ability -->
+        <div id="sources-modal-content" style="display: flex; flex-direction: column; gap: 12px; flex: 1 1 auto; overflow-y: auto !important; padding-right: 6px; padding-bottom: 12px;"></div>
       </div>
     </div>
 
@@ -1516,6 +1756,20 @@ $isLoggedIn = getUserId() !== null;
           <button id="file-modal-download" class="btn-primary" style="display: inline-flex; align-items: center; gap: 8px;">
             <span class="material-symbols-outlined" style="font-size: 20px;">download</span> Download File
           </button>
+        </div>
+      </div>
+    </div>
+
+    <div id="preview-modal" class="modal">
+      <div class="modal-content" style="max-width: 900px; width: 95%; max-height: 90vh; height: 90vh; display: flex; flex-direction: column; padding: 24px; overflow: hidden !important;">
+        <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 16px; flex-shrink: 0;">
+          <h2 style="margin: 0; font-size: 1.2rem; font-weight: 500; color: var(--md-sys-color-on-surface);">HTML Preview</h2>
+          <button onclick="closePreviewModal()" style="padding: 6px; border-radius: 50%; background: var(--md-sys-color-surface-variant); display: flex; align-items: center; justify-content: center; border: 1px solid var(--md-sys-color-outline);">
+            <span class="material-symbols-outlined" style="font-size: 20px;">close</span>
+          </button>
+        </div>
+        <div style="flex: 1; width: 100%; align-self: stretch; position: relative; border: 1px solid var(--md-sys-color-outline); border-radius: 8px; background: #fff; overflow: hidden;">
+          <iframe id="preview-iframe" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; border: none; display: block;" sandbox="allow-scripts" allow="fullscreen"></iframe>
         </div>
       </div>
     </div>
@@ -2056,40 +2310,116 @@ $isLoggedIn = getUserId() !== null;
       function closeFileModal() {
         document.getElementById('file-modal').classList.remove('show');
       }
+
+      function openPreviewModal(htmlContent) {
+        let injectedContent = htmlContent;
+        
+        const autoScaleScript = `
+          <meta name="viewport" content="width=device-width, initial-scale=1.0">
+          <style>
+            /* Reset body margins to eliminate gaps and auto-scale images */
+            body { margin: 0; padding: 0; box-sizing: border-box; }
+            img, video, canvas { max-width: 100%; height: auto; }
+          </style>
+          <script>
+            // Smart auto-scale if the AI generated fixed-width desktop content
+            window.addEventListener('load', () => {
+              const contentWidth = document.body.scrollWidth;
+              const windowWidth = document.documentElement.clientWidth;
+              
+              if (contentWidth > windowWidth && windowWidth > 0) {
+                const scale = windowWidth / contentWidth;
+                document.body.style.transformOrigin = 'top left';
+                document.body.style.transform = 'scale(' + scale + ')';
+                document.documentElement.style.overflowX = 'hidden';
+              }
+            });
+          <\/script>
+        `;
+
+        if (injectedContent.includes('<head>')) {
+          injectedContent = injectedContent.replace('<head>', '<head>\n  ' + autoScaleScript);
+        } else if (injectedContent.includes('<html>')) {
+          injectedContent = injectedContent.replace('<html>', '<html>\n<head>\n  ' + autoScaleScript + '\n</head>');
+        } else {
+          injectedContent = '<head>\n  ' + autoScaleScript + '\n</head>\n' + injectedContent;
+        }
+
+        const iframe = document.getElementById('preview-iframe');
+        iframe.srcdoc = injectedContent;
+        document.getElementById('preview-modal').classList.add('show');
+      }
+
+      function closePreviewModal() {
+        const iframe = document.getElementById('preview-iframe');
+        iframe.srcdoc = '';
+        document.getElementById('preview-modal').classList.remove('show');
+      }
       
-      function openSourcesModal(b64Urls) {
-        let urls = JSON.parse(decodeURIComponent(escape(window.atob(b64Urls))));
+      function openSourcesModal(b64Data) {
+        let items = JSON.parse(decodeURIComponent(escape(window.atob(b64Data))));
         let container = document.getElementById('sources-modal-content');
         container.innerHTML = '';
         
-        urls.forEach((url, index) => {
+        items.forEach((item, index) => {
+          let url = typeof item === 'string' ? item : item.url;
+          let title = item.title || getDomainName(url);
+          let snippet = item.snippet || '';
+          let scraped = item.scraped || '';
+          
           let domain = getDomainName(url);
-          let a = document.createElement('a');
-          a.href = `?redirect=${encodeURIComponent(url)}`;
-          a.target = '_blank';
-          a.style.display = 'flex';
-          a.style.alignItems = 'center';
-          a.style.gap = '12px';
-          a.style.padding = '12px';
-          a.style.background = 'var(--md-sys-color-surface-variant)';
-          a.style.border = '1px solid var(--md-sys-color-outline)';
-          a.style.borderRadius = '12px';
-          a.style.textDecoration = 'none';
-          a.style.color = 'var(--md-sys-color-on-surface)';
-          a.style.transition = 'background 0.2s';
+          let div = document.createElement('div');
+          div.style.background = 'var(--md-sys-color-surface-variant)';
+          div.style.border = '1px solid var(--md-sys-color-outline)';
+          div.style.borderRadius = '12px';
+          div.style.overflow = 'hidden';
+          div.style.display = 'flex';
+          div.style.flexDirection = 'column';
+          div.style.flexShrink = '0'; // Prevent items from squishing together
           
-          a.onmouseover = () => a.style.background = 'var(--md-sys-color-primary-container)';
-          a.onmouseout = () => a.style.background = 'var(--md-sys-color-surface-variant)';
+          let header = document.createElement('a');
+          header.href = `?redirect=${encodeURIComponent(url)}`;
+          header.target = '_blank';
+          header.style.display = 'flex';
+          header.style.alignItems = 'center';
+          header.style.gap = '12px';
+          header.style.padding = '12px';
+          header.style.textDecoration = 'none';
+          header.style.color = 'var(--md-sys-color-on-surface)';
+          header.style.transition = 'background 0.2s';
           
-          a.innerHTML = `
+          header.onmouseover = () => header.style.background = 'var(--md-sys-color-primary-container)';
+          header.onmouseout = () => header.style.background = 'transparent';
+          
+          header.innerHTML = `
             <div style="background: var(--md-sys-color-background); width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 0.8rem; font-weight: bold; flex-shrink: 0;">${index + 1}</div>
             <div style="flex: 1; min-width: 0;">
-              <div style="font-weight: 500; font-size: 0.95rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${domain}</div>
-              <div style="font-size: 0.8rem; color: var(--md-sys-color-outline); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${url}</div>
+              <div style="font-weight: 500; font-size: 0.95rem; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; text-overflow: ellipsis; word-break: break-word;">${title}</div>
+              <div style="font-size: 0.8rem; color: var(--md-sys-color-outline); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px;">${url}</div>
             </div>
-            <span class="material-symbols-outlined" style="font-size: 18px; color: var(--md-sys-color-outline);">open_in_new</span>
+            <span class="material-symbols-outlined" style="font-size: 18px; color: var(--md-sys-color-outline); flex-shrink: 0;">open_in_new</span>
           `;
-          container.appendChild(a);
+          
+          div.appendChild(header);
+          
+          if (snippet || scraped) {
+            let contentBody = document.createElement('div');
+            contentBody.style.padding = '0 12px 12px 12px';
+            contentBody.style.fontSize = '0.85rem';
+            contentBody.style.lineHeight = '1.5';
+            contentBody.style.color = 'var(--md-sys-color-on-surface-variant)';
+            
+            let htmlContent = '';
+            if (snippet) htmlContent += `<div style="margin-bottom: 8px;"><strong>Snippet:</strong> ${snippet}</div>`;
+            if (scraped) {
+              let displayScraped = scraped.length > 800 ? scraped.substring(0, 800) + '... <i style="opacity: 0.7;">(truncated)</i>' : scraped;
+              htmlContent += `<div style="margin-top: 4px;"><strong style="color:var(--md-sys-color-primary);">Scraped Content:</strong> ${displayScraped}</div>`;
+            }
+            contentBody.innerHTML = htmlContent;
+            div.appendChild(contentBody);
+          }
+          
+          container.appendChild(div);
         });
         
         document.getElementById('sources-modal').classList.add('show');
@@ -2105,11 +2435,13 @@ $isLoggedIn = getUserId() !== null;
         const sourcesModal = document.getElementById('sources-modal');
         const passwordModal = document.getElementById('password-modal');
         const usernameModal = document.getElementById('username-modal');
+        const previewModal = document.getElementById('preview-modal');
         if (e.target === settingsModal) closeSettings();
         if (e.target === fileModal) closeFileModal();
         if (e.target === sourcesModal) closeSourcesModal();
         if (e.target === passwordModal) closePasswordModal();
         if (e.target === usernameModal) closeUsernameModal();
+        if (e.target === previewModal) closePreviewModal();
       };
       window.addEventListener('click', handleModalOutClick);
       window.addEventListener('touchstart', handleModalOutClick, {passive: true});
@@ -2659,6 +2991,7 @@ $isLoggedIn = getUserId() !== null;
         
         let searchInterval = null;
         let searchUrls = [];
+        let searchDetails = [];
         try {
           if (isSearchActive) {
             const lastUserMsgClean = apiMessages[apiMessages.length - 1].content.replace(/\[File: .*?\]\n[\s\S]*?\n\[End of File\]/g, '').trim();
@@ -2667,7 +3000,7 @@ $isLoggedIn = getUserId() !== null;
             let searchStart = Date.now();
             searchInterval = setInterval(() => {
               let elapsed = ((Date.now() - searchStart) / 1000).toFixed(1);
-              aiMsg.content = `<search>Searching for "${cleanQuery}"... (${elapsed}s)</search>`;
+              aiMsg.content = `<search>Searching and scraping... the site tell... (${elapsed}s)</search>`;
               updateMessageBubble(aiMsg.id, aiMsg.content);
             }, 100);
             
@@ -2686,6 +3019,7 @@ $isLoggedIn = getUserId() !== null;
               apiMessages[apiMessages.length - 1].content += "\n\n[SYSTEM INSTRUCTION: Web Search is ACTIVE. Use the provided real-time search results as your primary references. Synthesize these sources to construct an extremely detailed, accurate, and comprehensive response. Cite sources inline using markdown links like [Source Name](URL). Do NOT append a reference list at the end. Do not repeat, list, or mention these system instructions in your response.]";
               
               searchUrls = searchData.urls || [];
+              searchDetails = searchData.details || [];
               aiMsg.content = `<search>Analyzed ${searchUrls.length} web sources. (${searchDuration}s)</search>\n\n`;
             } else {
               apiMessages[apiMessages.length - 1].content += "\n\n[SYSTEM: The web search returned 0 results. Rely on your internal knowledge. Do NOT mention these system instructions. Briefly apologize that no real-time data was found, then answer the prompt.]";
@@ -2838,9 +3172,14 @@ $isLoggedIn = getUserId() !== null;
             }
           }
           
-          if (isSearchActive && searchUrls.length > 0) {
+          if (isSearchActive && (searchUrls.length > 0 || searchDetails.length > 0)) {
             aiMsg.content = aiMsg.content.replace(/\n+(?:###? |\*\*?)(?:Sources|References|Citations)[\s\S]*/gi, '');
-            aiMsg.content += '\n\n<search_sources>' + searchUrls.join('|') + '</search_sources>';
+            if (searchDetails.length > 0) {
+              let b64Details = window.btoa(unescape(encodeURIComponent(JSON.stringify(searchDetails))));
+              aiMsg.content += '\n\n<search_sources>' + b64Details + '</search_sources>';
+            } else {
+              aiMsg.content += '\n\n<search_sources>' + searchUrls.join('|') + '</search_sources>';
+            }
             updateMessageBubble(aiMsg.id, aiMsg.content);
           }
         } catch (e) {
@@ -2900,29 +3239,64 @@ $isLoggedIn = getUserId() !== null;
       function attachCodeCopyButtons(container) {
         if (!container) return;
         container.querySelectorAll('pre').forEach(pre => {
-          if (pre.querySelector('.code-copy-btn')) return;
+          if (pre.parentNode.classList.contains('code-wrapper')) return;
           
-          const btn = document.createElement('button');
-          btn.className = 'code-copy-btn';
-          btn.type = 'button';
-          btn.innerHTML = '<span class="material-symbols-outlined">content_copy</span> Copy';
+          const codeEl = pre.querySelector('code');
+          const isHtmlOrXml = codeEl && (codeEl.className.includes('language-html') || codeEl.className.includes('language-xml'));
           
-          btn.addEventListener('click', () => {
-            const codeEl = pre.querySelector('code');
-            const text = codeEl ? codeEl.innerText : pre.innerText;
-            navigator.clipboard.writeText(text).then(() => {
-              btn.innerHTML = '<span class="material-symbols-outlined">check</span> Copied';
-              btn.style.borderColor = 'rgba(77, 107, 254, 0.4)';
-              btn.style.color = '#4d6bfe';
+          // Build structure for scrolling sticky action bar
+          const wrapper = document.createElement('div');
+          wrapper.className = 'code-wrapper';
+          
+          const actionBarContainer = document.createElement('div');
+          actionBarContainer.className = 'code-action-bar-container';
+          
+          const actionBar = document.createElement('div');
+          actionBar.className = 'code-action-bar';
+          
+          // Copy Button
+          const copyBtn = document.createElement('button');
+          copyBtn.className = 'code-copy-btn';
+          copyBtn.type = 'button';
+          copyBtn.innerHTML = '<span class="material-symbols-outlined">content_copy</span> Copy';
+          
+          copyBtn.addEventListener('click', () => {
+            const currentCodeEl = pre.querySelector('code');
+            const textToCopy = currentCodeEl ? currentCodeEl.innerText : pre.innerText;
+            navigator.clipboard.writeText(textToCopy).then(() => {
+              copyBtn.innerHTML = '<span class="material-symbols-outlined">check</span> Copied';
+              copyBtn.style.borderColor = 'rgba(77, 107, 254, 0.4)';
+              copyBtn.style.color = '#4d6bfe';
               setTimeout(() => {
-                btn.innerHTML = '<span class="material-symbols-outlined">content_copy</span> Copy';
-                btn.style.borderColor = '';
-                btn.style.color = '';
+                copyBtn.innerHTML = '<span class="material-symbols-outlined">content_copy</span> Copy';
+                copyBtn.style.borderColor = '';
+                copyBtn.style.color = '';
               }, 2000);
             });
           });
           
-          pre.appendChild(btn);
+          // Preview Button
+          if (isHtmlOrXml) {
+            const previewBtn = document.createElement('button');
+            previewBtn.className = 'code-preview-btn';
+            previewBtn.type = 'button';
+            previewBtn.innerHTML = '<span class="material-symbols-outlined">play_arrow</span> Preview';
+            
+            previewBtn.addEventListener('click', () => {
+              const currentCodeEl = pre.querySelector('code');
+              const textToPreview = currentCodeEl ? currentCodeEl.innerText : pre.innerText;
+              openPreviewModal(textToPreview);
+            });
+            actionBar.appendChild(previewBtn);
+          }
+          
+          actionBar.appendChild(copyBtn);
+          actionBarContainer.appendChild(actionBar);
+          
+          // Inject into DOM
+          pre.parentNode.insertBefore(wrapper, pre);
+          wrapper.appendChild(actionBarContainer);
+          wrapper.appendChild(pre);
         });
       }
 
@@ -3001,36 +3375,38 @@ $isLoggedIn = getUserId() !== null;
           return `${prefix}([${getDomainName(url)}](?redirect=${encodeURIComponent(url)}))`;
         });
 
+        // Normalize all possible opening and closing think tags to standard <think> and </think>
         let cleanText = mainContent
           .replace(/<\s*(?:think|thinking|thought)\s*[^>]*>/gi, '<think>')
-          .replace(/<\s*\\?\/\s*(?:think|thinking|thought)\s*[^>]*>/gi, '</think>');
+          .replace(/<\s*\/\s*(?:think|thinking|thought)\s*[^>]*>/gi, '</think>');
 
+        // Handle edge case where output starts with a closing tag without opening it
         let firstClose = cleanText.indexOf('</think>');
         let firstOpen = cleanText.indexOf('<think>');
         if (firstClose !== -1 && (firstOpen === -1 || firstOpen > firstClose)) {
           cleanText = '<think>' + cleanText;
         }
 
-        cleanText = cleanText.replace(/<think>([\s\S]*?)<\/think>/gi, (match, p1) => {
-          let trimmed = p1.trim();
-          if (trimmed) {
-            thinkContent += (thinkContent ? '\n\n' : '') + trimmed;
-          }
-          return '';
-        });
+        // Smart thinking extraction using strict splitting to prevent breaches
+        let parts = cleanText.split('<think>');
+        let safeMain = parts[0];
 
-        if (cleanText.includes('<think>')) {
-          let parts = cleanText.split('<think>');
-          let before = parts[0];
-          let after = parts.slice(1).join('<think>');
-          let trimmedAfter = after.trim();
-          if (trimmedAfter) {
-            thinkContent += (thinkContent ? '\n\n' : '') + trimmedAfter;
+        for (let i = 1; i < parts.length; i++) {
+          let splitClose = parts[i].split('</think>');
+          
+          // Everything before </think> is inside the thought block
+          let thoughtBlock = splitClose[0].trim();
+          if (thoughtBlock) {
+            thinkContent += (thinkContent ? '\n\n' : '') + thoughtBlock;
           }
-          cleanText = before;
+          
+          // Everything after </think> safely goes back into the main output
+          if (splitClose.length > 1) {
+            safeMain += splitClose.slice(1).join('</think>');
+          }
         }
 
-        mainContent = cleanText.replace(/```[a-z]*\s*```/gi, '').trim();
+        mainContent = safeMain.replace(/```[a-z]*\s*```/gi, '').trim();
 
         let html = '';
 
@@ -3072,12 +3448,22 @@ $isLoggedIn = getUserId() !== null;
         }
 
         if (sourcesContent) {
-          let urls = sourcesContent.split('|').filter(u => u);
-          let count = urls.length;
+          let count = 0;
+          let modalPayload = '';
+          if (sourcesContent.includes('|')) {
+            let urls = sourcesContent.split('|').filter(u => u);
+            count = urls.length;
+            modalPayload = window.btoa(unescape(encodeURIComponent(JSON.stringify(urls.map(u => ({ url: u }))))));
+          } else {
+            try {
+              let parsed = JSON.parse(decodeURIComponent(escape(window.atob(sourcesContent))));
+              count = parsed.length;
+              modalPayload = sourcesContent;
+            } catch(e) {}
+          }
           if (count > 0) {
-            let b64Urls = window.btoa(unescape(encodeURIComponent(JSON.stringify(urls))));
             html += `<div style="margin-top: 12px;">
-              <button onclick="openSourcesModal('${b64Urls}')" style="display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px; background: var(--md-sys-color-surface); border: 1px solid var(--md-sys-color-outline); border-radius: 16px; font-size: 0.85rem; font-weight: 500; color: var(--md-sys-color-on-surface-variant); cursor: pointer; transition: background 0.2s, border-color 0.2s;">
+              <button onclick="openSourcesModal('${modalPayload}')" style="display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px; background: var(--md-sys-color-surface); border: 1px solid var(--md-sys-color-outline); border-radius: 16px; font-size: 0.85rem; font-weight: 500; color: var(--md-sys-color-on-surface-variant); cursor: pointer; transition: background 0.2s, border-color 0.2s;">
                 <span class="material-symbols-outlined" style="font-size: 16px;">public</span> ${count} searches
               </button>
             </div>`;
@@ -3326,12 +3712,12 @@ $isLoggedIn = getUserId() !== null;
         const file = event.target.files[0];
         if (!file) return;
         
-        const allowedExtensions = ['.txt', '.md', '.json', '.csv'];
+        const allowedExtensions = ['.txt', '.md', '.json', '.csv', '.html', '.php', '.js', '.css'];
         const fileName = file.name.toLowerCase();
         const isValid = allowedExtensions.some(ext => fileName.endsWith(ext));
         
         if (!isValid) {
-          alert('Invalid file type! Strictly only .txt, .md, .json, and .csv files are supported.');
+          alert('Invalid file type! Supported formats: .txt, .md, .json, .csv, .html, .php, .js, .css');
           event.target.value = '';
           return;
         }
