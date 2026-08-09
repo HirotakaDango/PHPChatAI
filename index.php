@@ -44,6 +44,7 @@ try {
   if (!in_array('name', $userCols)) $db->exec("ALTER TABLE users ADD COLUMN name TEXT");
   if (!in_array('email', $userCols)) $db->exec("ALTER TABLE users ADD COLUMN email TEXT");
   if (!in_array('username', $userCols)) $db->exec("ALTER TABLE users ADD COLUMN username TEXT");
+  if (!in_array('status', $userCols)) $db->exec("ALTER TABLE users ADD COLUMN status TEXT DEFAULT 'user'");
 } catch (Exception $e) {
   if (strpos($e->getMessage(), 'readonly database') !== false) {
     @chmod(__DIR__, 0755);
@@ -52,6 +53,7 @@ try {
       if (!in_array('name', $userCols)) $db->exec("ALTER TABLE users ADD COLUMN name TEXT");
       if (!in_array('email', $userCols)) $db->exec("ALTER TABLE users ADD COLUMN email TEXT");
       if (!in_array('username', $userCols)) $db->exec("ALTER TABLE users ADD COLUMN username TEXT");
+      if (!in_array('status', $userCols)) $db->exec("ALTER TABLE users ADD COLUMN status TEXT DEFAULT 'user'");
     } catch (Exception $retryException) {
       die("<div style='font-family:sans-serif; padding:40px; text-align:center; background:#121212; color:#e3e3e3; height:100vh; box-sizing:border-box;'>
         <h2 style='color:#ff5252;'>Database Permission Denied</h2>
@@ -88,17 +90,16 @@ function jsonResponse($data) {
 
 $isAdmin = false;
 if (getUserId()) {
-  $stmt = $db->prepare("SELECT * FROM users WHERE id = ?");
+  $stmt = $db->prepare("SELECT status FROM users WHERE id = ?");
   $stmt->execute([getUserId()]);
   $currentUser = $stmt->fetch(PDO::FETCH_ASSOC);
-  if ($currentUser) {
-    $emailCheck = $currentUser['email'] ?? '';
-    $userCheck = $currentUser['username'] ?? '';
-    if ($emailCheck === 'musiclibrary@mail.com' || $userCheck === 'musiclibrary@mail.com') {
-      $isAdmin = true;
-    }
+  if ($currentUser && ($currentUser['status'] ?? '') === 'superadmin') {
+    $isAdmin = true;
   }
 }
+
+$stmt = $db->query("SELECT COUNT(*) FROM users WHERE status = 'superadmin'");
+$hasSuperAdmin = ((int)$stmt->fetchColumn()) > 0;
 
 $stmt = $db->query("SELECT key, value FROM settings WHERE key IN ('hf_token', 'gemini_token')");
 $tokens = $stmt->fetchAll(PDO::FETCH_KEY_PAIR);
@@ -124,12 +125,16 @@ if (isset($_GET['api'])) {
     }
 
     try {
-      $stmt = $db->prepare("INSERT INTO users (name, email, password) VALUES (?, ?, ?)");
-      $stmt->execute([$name, $email, $pass]);
+      $countStmt = $db->query("SELECT COUNT(*) FROM users WHERE status = 'superadmin'");
+      $superAdminExists = ((int)$countStmt->fetchColumn()) > 0;
+      $roleStatus = $superAdminExists ? 'user' : 'superadmin';
+
+      $stmt = $db->prepare("INSERT INTO users (name, email, password, status) VALUES (?, ?, ?, ?)");
+      $stmt->execute([$name, $email, $pass, $roleStatus]);
       $_SESSION['user_id'] = $db->lastInsertId();
       $_SESSION['name'] = $name;
       $_SESSION['email'] = $email;
-      jsonResponse(['status' => 'success']);
+      jsonResponse(['status' => 'success', 'is_superadmin' => ($roleStatus === 'superadmin')]);
     } catch (Exception $e) {
       jsonResponse(['error' => 'Registration failed: ' . $e->getMessage()]);
     }
@@ -308,7 +313,6 @@ if (isset($_GET['api'])) {
     $dom = new DOMDocument();
     @$dom->loadHTML('<?xml encoding="UTF-8">' . $html, LIBXML_NOERROR | LIBXML_NOWARNING);
     
-    // Remove unnecessary elements for clean content extraction
     $removeTags = ['script', 'style', 'nav', 'header', 'footer', 'aside', 'noscript', 'iframe'];
     foreach ($removeTags as $tag) {
       $elements = $dom->getElementsByTagName($tag);
@@ -325,7 +329,7 @@ if (isset($_GET['api'])) {
       if (!empty($nodeText)) {
         $text .= $nodeText . "\n";
       }
-      if (strlen($text) > 1500) break; // Limit extracted length per site to save context
+      if (strlen($text) > 1500) break;
     }
     return trim(substr($text, 0, 1500));
   }
@@ -373,7 +377,6 @@ if (isset($_GET['api'])) {
     $req = json_decode(file_get_contents('php://input'), true);
     $query = $req['q'] ?? ($_GET['q'] ?? '');
     
-    // Exclude YouTube directly at the search engine level
     if (!empty($query) && strpos($query, '-site:youtube.com') === false) {
       $query .= ' -site:youtube.com';
     }
@@ -383,7 +386,6 @@ if (isset($_GET['api'])) {
     $snippets = [];
     $sourceDetails = [];
 
-    // WordPress REST API: Direct domain search if a domain is mentioned in query
     if (preg_match('/\b([a-z0-9\-]+\.[a-z]{2,})\b/i', $query, $domainMatch)) {
       $targetDomain = strtolower($domainMatch[1]);
       $ignoredDomains = ['youtube.com', 'youtu.be', 'duckduckgo.com', 'google.com', 'wikipedia.org', 'fandom.com'];
@@ -400,7 +402,6 @@ if (isset($_GET['api'])) {
       }
     }
 
-    // Expanded list of free SearxNG metasearch engines
     $searxInstances = [
       'https://searx.be', 'https://paulgo.io', 'https://search.mdosch.de',
       'https://searx.tiekoetter.com', 'https://search.inetol.net',
@@ -422,10 +423,9 @@ if (isset($_GET['api'])) {
 
     $searxAttempts = 0;
     foreach ($searxInstances as $instance) {
-      if ($searxAttempts >= 3) break; // Try up to 3 different instances
+      if ($searxAttempts >= 3) break;
       $searxAttempts++;
       
-      // Rotate the spoofed IP for every single attempt to bypass limits
       $searxOpts['http']['header'] = "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36\r\nAccept: application/json\r\n" . getRandomIpHeader();
       
       $searxJson = @file_get_contents($instance . '/search?q=' . urlencode($query) . '&format=json', false, stream_context_create($searxOpts));
@@ -448,7 +448,6 @@ if (isset($_GET['api'])) {
       }
     }
 
-    // Fallback 1: DuckDuckGo Lite with IP Spoofing
     if (count($urls) < 5) {
       $ddgOpts = [
         'http' => [
@@ -478,7 +477,6 @@ if (isset($_GET['api'])) {
       }
     }
 
-    // Fallback 2: Wikipedia Search API if the other engines failed
     if (count($urls) < 4) {
       $wikiUrl = "https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=" . urlencode(str_replace('-site:youtube.com', '', $query)) . "&utf8=&format=json";
       $wikiOpts = [
@@ -509,7 +507,6 @@ if (isset($_GET['api'])) {
       }
     }
 
-    // Fallback 3: Fandom Wikis (via targeted DDG search) for pop culture, games, and lore
     if (count($urls) < 4) {
       $fandomQuery = trim(str_replace('-site:youtube.com', '', $query)) . ' site:fandom.com';
       $fandomOpts = [
@@ -540,7 +537,6 @@ if (isset($_GET['api'])) {
       }
     }
 
-    // Fallback 4: WordPress Native REST API on domains discovered in search results
     if (count($urls) < 4 && !empty($urls)) {
       foreach ($urls as $existingUrl) {
         $host = parse_url($existingUrl, PHP_URL_HOST);
@@ -1648,12 +1644,17 @@ $isLoggedIn = getUserId() !== null;
   <body class="dark">
     <div id="auth-screen">
       <form class="auth-box" onsubmit="event.preventDefault(); handleAuth();">
-        <h1 id="auth-title">Welcome back</h1>
-        <input type="text" id="auth-name" placeholder="Name" autocomplete="name" style="display: none;">
+        <h1 id="auth-title"><?= !$hasSuperAdmin ? 'Setup Super Admin' : 'Welcome back' ?></h1>
+        <?php if (!$hasSuperAdmin): ?>
+          <p id="setup-banner" style="color: var(--md-sys-color-primary); font-size: 0.85rem; margin-bottom: 16px;">
+            First-time Setup: The first registered user will become the Super Admin.
+          </p>
+        <?php endif; ?>
+        <input type="text" id="auth-name" placeholder="Name" autocomplete="name" style="<?= !$hasSuperAdmin ? 'display: block;' : 'display: none;' ?>" <?= !$hasSuperAdmin ? 'required' : '' ?>>
         <input type="email" id="auth-email" placeholder="Email" autocomplete="email" required>
         <input type="password" id="auth-pass" placeholder="Password" autocomplete="current-password" required>
         <button type="submit">Continue</button>
-        <div class="auth-switch" onclick="toggleAuthMode()" id="auth-switch-text">Don't have an account? Sign up</div>
+        <div class="auth-switch" onclick="toggleAuthMode()" id="auth-switch-text"><?= !$hasSuperAdmin ? 'Setup initial admin account' : "Don't have an account? Sign up" ?></div>
       </form>
     </div>
     
@@ -1730,7 +1731,6 @@ $isLoggedIn = getUserId() !== null;
     </div>
 
     <div id="sources-modal" class="modal">
-      <!-- Force height and hide outer scrollbar to fix the cramped UI and double-scroll issues -->
       <div class="modal-content" style="max-width: 800px; width: 92%; max-height: 85vh; height: 85vh; display: flex; flex-direction: column; padding: 24px; overflow: hidden !important;">
         <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 16px; flex-shrink: 0;">
           <h2 style="margin: 0; font-size: 1.2rem; font-weight: 500; color: var(--md-sys-color-on-surface);">Sources & References</h2>
@@ -1738,7 +1738,6 @@ $isLoggedIn = getUserId() !== null;
             <span class="material-symbols-outlined" style="font-size: 20px;">close</span>
           </button>
         </div>
-        <!-- Inner container gets the scrolling ability -->
         <div id="sources-modal-content" style="display: flex; flex-direction: column; gap: 12px; flex: 1 1 auto; overflow-y: auto !important; padding-right: 6px; padding-bottom: 12px;"></div>
       </div>
     </div>
@@ -2008,7 +2007,8 @@ $isLoggedIn = getUserId() !== null;
       }
 
       const userName = <?= json_encode($_SESSION['name'] ?? 'User') ?>;
-      let isLoginMode = true;
+      const hasSuperAdmin = <?= $hasSuperAdmin ? 'true' : 'false' ?>;
+      let isLoginMode = hasSuperAdmin;
       let chats = [];
       let messages = [];
       let currentChatId = null;
@@ -2084,6 +2084,18 @@ $isLoggedIn = getUserId() !== null;
       }
 
       function toggleAuthMode() {
+        if (!hasSuperAdmin) {
+          isLoginMode = false;
+          document.getElementById('auth-title').textContent = 'Setup Super Admin';
+          document.getElementById('auth-switch-text').textContent = 'First account will be Super Admin';
+          const nameInput = document.getElementById('auth-name');
+          const passInput = document.getElementById('auth-pass');
+          nameInput.style.display = 'block';
+          nameInput.setAttribute('required', 'true');
+          passInput.setAttribute('autocomplete', 'new-password');
+          return;
+        }
+
         isLoginMode = !isLoginMode;
         document.getElementById('auth-title').textContent = isLoginMode ? 'Welcome back' : 'Create an account';
         document.getElementById('auth-switch-text').textContent = isLoginMode ? "Don't have an account? Sign up" : "Already have an account? Log in";
@@ -2317,12 +2329,10 @@ $isLoggedIn = getUserId() !== null;
         const autoScaleScript = `
           <meta name="viewport" content="width=device-width, initial-scale=1.0">
           <style>
-            /* Reset body margins to eliminate gaps and auto-scale images */
             body { margin: 0; padding: 0; box-sizing: border-box; }
             img, video, canvas { max-width: 100%; height: auto; }
           </style>
           <script>
-            // Smart auto-scale if the AI generated fixed-width desktop content
             window.addEventListener('load', () => {
               const contentWidth = document.body.scrollWidth;
               const windowWidth = document.documentElement.clientWidth;
@@ -2375,7 +2385,7 @@ $isLoggedIn = getUserId() !== null;
           div.style.overflow = 'hidden';
           div.style.display = 'flex';
           div.style.flexDirection = 'column';
-          div.style.flexShrink = '0'; // Prevent items from squishing together
+          div.style.flexShrink = '0';
           
           let header = document.createElement('a');
           header.href = `?redirect=${encodeURIComponent(url)}`;
@@ -2655,7 +2665,7 @@ $isLoggedIn = getUserId() !== null;
         document.getElementById('topbar-title').textContent = titleText;
         
         if (activeChat) {
-          document.title = `${titleText} — PHPChatAI`;
+          document.title = `${titleText} - PHPChatAI`;
         } else {
           document.title = "PHPChatAI";
         }
@@ -2702,7 +2712,7 @@ $isLoggedIn = getUserId() !== null;
             body: JSON.stringify({id: id, title: newTitle})
           });
           if (currentChatId === id) {
-            document.title = `${newTitle} — PHPChatAI`;
+            document.title = `${newTitle} - PHPChatAI`;
             document.getElementById('topbar-title').textContent = newTitle;
           }
           await loadChats();
@@ -2882,7 +2892,7 @@ $isLoggedIn = getUserId() !== null;
           updateURL(currentChatId);
           
           const title = displayTitleText;
-          document.title = `${title} — PHPChatAI`;
+          document.title = `${title} - PHPChatAI`;
           document.getElementById('topbar-title').textContent = title;
           await fetch('?api=rename_chat', {
             method: 'POST',
@@ -3244,7 +3254,6 @@ $isLoggedIn = getUserId() !== null;
           const codeEl = pre.querySelector('code');
           const isHtmlOrXml = codeEl && (codeEl.className.includes('language-html') || codeEl.className.includes('language-xml'));
           
-          // Build structure for scrolling sticky action bar
           const wrapper = document.createElement('div');
           wrapper.className = 'code-wrapper';
           
@@ -3254,7 +3263,6 @@ $isLoggedIn = getUserId() !== null;
           const actionBar = document.createElement('div');
           actionBar.className = 'code-action-bar';
           
-          // Copy Button
           const copyBtn = document.createElement('button');
           copyBtn.className = 'code-copy-btn';
           copyBtn.type = 'button';
@@ -3275,7 +3283,6 @@ $isLoggedIn = getUserId() !== null;
             });
           });
           
-          // Preview Button
           if (isHtmlOrXml) {
             const previewBtn = document.createElement('button');
             previewBtn.className = 'code-preview-btn';
@@ -3293,7 +3300,6 @@ $isLoggedIn = getUserId() !== null;
           actionBar.appendChild(copyBtn);
           actionBarContainer.appendChild(actionBar);
           
-          // Inject into DOM
           pre.parentNode.insertBefore(wrapper, pre);
           wrapper.appendChild(actionBarContainer);
           wrapper.appendChild(pre);
@@ -3375,32 +3381,27 @@ $isLoggedIn = getUserId() !== null;
           return `${prefix}([${getDomainName(url)}](?redirect=${encodeURIComponent(url)}))`;
         });
 
-        // Normalize all possible opening and closing think tags to standard <think> and </think>
         let cleanText = mainContent
           .replace(/<\s*(?:think|thinking|thought)\s*[^>]*>/gi, '<think>')
           .replace(/<\s*\/\s*(?:think|thinking|thought)\s*[^>]*>/gi, '</think>');
 
-        // Handle edge case where output starts with a closing tag without opening it
         let firstClose = cleanText.indexOf('</think>');
         let firstOpen = cleanText.indexOf('<think>');
         if (firstClose !== -1 && (firstOpen === -1 || firstOpen > firstClose)) {
           cleanText = '<think>' + cleanText;
         }
 
-        // Smart thinking extraction using strict splitting to prevent breaches
         let parts = cleanText.split('<think>');
         let safeMain = parts[0];
 
         for (let i = 1; i < parts.length; i++) {
           let splitClose = parts[i].split('</think>');
           
-          // Everything before </think> is inside the thought block
           let thoughtBlock = splitClose[0].trim();
           if (thoughtBlock) {
             thinkContent += (thinkContent ? '\n\n' : '') + thoughtBlock;
           }
           
-          // Everything after </think> safely goes back into the main output
           if (splitClose.length > 1) {
             safeMain += splitClose.slice(1).join('</think>');
           }
