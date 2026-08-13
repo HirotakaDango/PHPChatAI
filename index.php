@@ -1854,9 +1854,10 @@ $isLoggedIn = getUserId() !== null;
             <div id="gemini-model-container" style="display: none;">
               <select id="settings-model-gemini">
                 <optgroup label="Google Gemini Models">
-                  <option value="gemini-3.6-flash">Gemini 3.6 Flash (Latest/Flagship)</option>
-                  <option value="gemini-3.5-flash">Gemini 3.5 Flash (Performance Optimized)</option>
-                  <option value="gemini-3.5-flash-lite">Gemini 3.5 Flash-Lite (Cost/Speed Optimized)</option>
+                  <option value="gemini-3.7-flash">Gemini 3.7 Flash</option>
+                  <option value="gemini-3.6-flash">Gemini 3.6 Flash</option>
+                  <option value="gemini-3.5-flash">Gemini 3.5 Flash</option>
+                  <option value="gemini-3.5-flash-lite">Gemini 3.5 Flash-Lite</option>
                   <option value="gemini-3.1-pro-preview">Gemini 3.1 Pro (Preview)</option>
                   <option value="gemini-3.1-flash-lite">Gemini 3.1 Flash-Lite</option>
                 </optgroup>
